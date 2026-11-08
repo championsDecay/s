@@ -1851,6 +1851,51 @@ end
 
 local getMyPlot
 
+local function chestTopPosition(chest, base, character, root, position, maxDistance)
+    -- Include solid/visible chest geometry, but ignore invisible non-solid prompt volumes.
+    local minimum = Vector3.new(math.huge, math.huge, math.huge)
+    local maximum = Vector3.new(-math.huge, -math.huge, -math.huge)
+    local parts = chest:GetDescendants()
+    if chest:IsA("BasePart") then table.insert(parts, chest) end
+    local found = false
+    local function includePart(part)
+        found = true
+        for x = -1, 1, 2 do
+            for y = -1, 1, 2 do
+                for z = -1, 1, 2 do
+                    local corner = part.CFrame:PointToWorldSpace(Vector3.new(part.Size.X * x * 0.5,
+                        part.Size.Y * y * 0.5, part.Size.Z * z * 0.5))
+                    minimum = Vector3.new(math.min(minimum.X, corner.X), math.min(minimum.Y, corner.Y), math.min(minimum.Z, corner.Z))
+                    maximum = Vector3.new(math.max(maximum.X, corner.X), math.max(maximum.Y, corner.Y), math.max(maximum.Z, corner.Z))
+                end
+            end
+        end
+    end
+    for _, part in ipairs(parts) do
+        if part:IsA("BasePart") and (part.CanCollide or part.Transparency < 1) then includePart(part) end
+    end
+    if not found then includePart(base) end
+    -- The destination is upright: keep the avatar's lowest point one stud above the lid.
+    local bodyFrame, bodySize = character:GetBoundingBox()
+    local lowest = -root.Size.Y * 0.5
+    for x = -1, 1, 2 do
+        for y = -1, 1, 2 do
+            for z = -1, 1, 2 do
+                local corner = bodyFrame:PointToWorldSpace(Vector3.new(bodySize.X * x * 0.5,
+                    bodySize.Y * y * 0.5, bodySize.Z * z * 0.5))
+                lowest = math.min(lowest, root.CFrame:PointToObjectSpace(corner).Y)
+            end
+        end
+    end
+    position = position or base.Position
+    local stand = Vector3.new(math.clamp(position.X, minimum.X, maximum.X), maximum.Y - lowest + 1,
+        math.clamp(position.Z, minimum.Z, maximum.Z))
+    if maxDistance and (stand - position).Magnitude > maxDistance - 0.25 then
+        return nil, "The position above the chest and avatar bounds is outside prompt range."
+    end
+    return stand
+end
+
 local function recoverUnitPanelThroughChest(checkCurrent, operation)
     local recoveryName = operation or "ExitButton recovery"
     local function check()
@@ -1881,65 +1926,6 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
         local mine = playerGui:FindFirstChild("MineGui")
         return mine and mine:FindFirstChild("ChestFrame")
     end
-    local function findChestRecoveryStand(position, maxDistance)
-        -- Include solid/visible chest geometry, but ignore invisible non-solid prompt volumes.
-        local minimum = Vector3.new(math.huge, math.huge, math.huge)
-        local maximum = Vector3.new(-math.huge, -math.huge, -math.huge)
-        local parts = chest:GetDescendants()
-        if chest:IsA("BasePart") then table.insert(parts, chest) end
-        local found = false
-        local function includePart(part)
-            found = true
-            for x = -1, 1, 2 do
-                for y = -1, 1, 2 do
-                    for z = -1, 1, 2 do
-                        local corner = part.CFrame:PointToWorldSpace(Vector3.new(part.Size.X * x * 0.5,
-                            part.Size.Y * y * 0.5, part.Size.Z * z * 0.5))
-                        minimum = Vector3.new(math.min(minimum.X, corner.X), math.min(minimum.Y, corner.Y), math.min(minimum.Z, corner.Z))
-                        maximum = Vector3.new(math.max(maximum.X, corner.X), math.max(maximum.Y, corner.Y), math.max(maximum.Z, corner.Z))
-                    end
-                end
-            end
-        end
-        for _, part in ipairs(parts) do
-            if part:IsA("BasePart") and (part.CanCollide or part.Transparency < 1) then includePart(part) end
-        end
-        if not found then includePart(base) end
-        -- Measure the whole avatar around its root so its body also clears the chest.
-        local bodyFrame, bodySize = character:GetBoundingBox()
-        local clearance = math.max(root.Size.X, root.Size.Z) * 0.5
-        for x = -1, 1, 2 do
-            for y = -1, 1, 2 do
-                for z = -1, 1, 2 do
-                    local corner = bodyFrame:PointToWorldSpace(Vector3.new(bodySize.X * x * 0.5,
-                        bodySize.Y * y * 0.5, bodySize.Z * z * 0.5))
-                    local localCorner = root.CFrame:PointToObjectSpace(corner)
-                    clearance = math.max(clearance, Vector3.new(localCorner.X, 0, localCorner.Z).Magnitude)
-                end
-            end
-        end
-        clearance = clearance + 0.75
-        local height = math.min(CONFIG.Units.TeleportHeight, math.max(0.1, maxDistance * 0.5))
-        local standY = position.Y + height
-        local nearestX = math.clamp(position.X, minimum.X, maximum.X)
-        local nearestZ = math.clamp(position.Z, minimum.Z, maximum.Z)
-        local candidates = {
-            Vector3.new(minimum.X - clearance, standY, nearestZ),
-            Vector3.new(maximum.X + clearance, standY, nearestZ),
-            Vector3.new(nearestX, standY, minimum.Z - clearance),
-            Vector3.new(nearestX, standY, maximum.Z + clearance),
-        }
-        local best, bestDistance
-        for _, candidate in ipairs(candidates) do
-            local distance = (candidate - position).Magnitude
-            if distance <= maxDistance - 0.25 and (not bestDistance or distance < bestDistance) then
-                best, bestDistance = candidate, distance
-            end
-        end
-        if best then return best end
-        return nil, "No position outside the chest and avatar bounds is within prompt range."
-    end
-
     local function triggerChest()
         checkTarget()
         local prompt = waitUntil(function()
@@ -1953,14 +1939,15 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
             end
             return found
         end, nil, recoveryName .. ": waiting for your chest proximity prompt")
-        local reportStand = newRetryMonitor(recoveryName .. ": finding a safe position beside the chest")
+        local reportStand = newRetryMonitor(recoveryName .. ": finding a safe position above the chest")
         local stand, position
         while not stand do
             checkTarget()
             local parent = prompt.Parent
-            position = parent:IsA("Attachment") and parent.WorldPosition or base.Position
+            position = parent:IsA("Attachment") and parent.WorldPosition
+                or parent:IsA("BasePart") and parent.Position or base.Position
             local problem
-            stand, problem = findChestRecoveryStand(position, prompt.MaxActivationDistance)
+            stand, problem = chestTopPosition(chest, base, character, root, position, prompt.MaxActivationDistance)
             if not stand then reportStand(problem); pause(CONFIG.General.ScanPoll) end
         end
         reportStand(nil, true)
@@ -7020,7 +7007,7 @@ local function rootPart()
     assert(root and humanoid and humanoid.Health > 0, "Character is not ready")
     return root
 end
-local function teleport(target)
+local function teleport(target, chest)
     checkFlow()
     assert(target, "Teleport target is missing")
     local cf, size
@@ -7036,6 +7023,10 @@ local function teleport(target)
         + math.abs(cf.UpVector.Y) * size.Y + math.abs(cf.LookVector.Y) * size.Z) / 2
     local destination = cf.Position + Vector3.new(0, halfHeight + 3.5, 0)
     local root = rootPart()
+    if chest then
+        destination = chestTopPosition(chest, target, player.Character, root)
+        cf = CFrame.new(destination)
+    end
     root.CFrame = CFrame.new(destination) * cf.Rotation
     root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
     waitFor("Confirming teleport", function()
@@ -7220,7 +7211,7 @@ local function useTutorialChest(takeLoot)
                 return path(plot, {"Chest", "ChestBase"})
             end)
             validatePlot(plot)
-            teleport(base)
+            teleport(base, base.Parent)
             if retryPrompt or not visible(ui("ChestFrame")) then
                 pause(UI_TIMING.BeforeOpen)
                 local prompt = promptUnder(plot:FindFirstChild("Chest"))
