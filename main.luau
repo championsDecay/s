@@ -1133,7 +1133,7 @@ local specs = {
     {"pickaxe", "Pickaxe", "Buy Best Pickaxe", "1. Open the shop, wait for it to refresh, then close it.\n2. Find the highest unlocked pickaxe.\n3. Check its saved limit and whether its buy button is green.\n4. Record and send one purchase request if eligible."},
     {"upgrades", "Upgrades", "Run Upgrades", "1. Open the skill tree and scan the current zone.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-7 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
     {"upgradingOldUnit", "Upgrade Old Units", "Run Upgrade Old Units", "1. Check that current-zone Density is 0.\n2. Find displayed units matching the previous zone's required names.\n3. Upgrade Damage toward the target, starting with the lowest level.\n4. Stop when the target is reached or further upgrades are unavailable."},
-    {"units", "Required Units", "Run Required Units", "1. Check cooldown and refresh the hotbar.\n2. Count matching units on display and in the hotbar.\n3. If eligible, remove displayed units and refill the hotbar.\n4. Place the required matches."},
+    {"units", "Required Units", "Run Required Units", "1. Check cooldown and clear the hotbar.\n2. Count whitelisted inventory copies plus displayed units.\n3. If eligible, remove displayed units.\n4. Fill required pads using one stack at a time through hotbar 1."},
     {"mutation", "Mutate Units", "Run Mutate Units", "1. Check zone rules, Density, and Required Units preparation.\n2. Scan mutations in the first required unlocked holders.\n3. Roll eligible units below the active targets.\n4. Rescan until the targets are met or further rolls are unavailable."},
     {"upgradingUnit", "Upgrade Units", "Run Upgrade Units", "1. Check cooldown and scan the required lineup.\n2. Upgrade Damage to the allowed cap, with stat catch-up between batches.\n3. Finish Speed and MineSpeed catch-up on eligible units."},
     {"cycleEnd", "Cycle end", "Run Cycle end", "1. Equip Best and wait for the equip delay.\n2. Select Current Zone if enabled.\n3. Select Next Zone if enabled.\n4. Attempt to unlock remaining holder slots."},
@@ -1365,21 +1365,20 @@ ACTIONS
 STOPS
 Skip if no displayed unit matches. Stop a unit at the target or when Damage is unavailable; stop with an error if ownership, identity, character, required controls, or expected response is lost. This stage does not run Speed/MineSpeed catch-up.]],
         units = [[ENTRY CONDITIONS
-Check the shared unit-sequence cooldown before refreshing anything. If it is active, keep displayed units and skip. Reset Cooldown clears it; a newly detected zone also resets it. Validate the equipment mode and required count, get the cached zone/Density, check the plot, and start the sequence cooldown.
-
-HOTBAR REFRESH / RANKING
-Clear all nine assignments, open inventory, and select up to nine current-zone Names matches. At Density 2+, require a nonempty animation tag. Skip unreadable Damage values. Rank by highest displayed Damage, prefer _AnimTag entries only on equal Damage, then preserve inventory order. Continue through eligible rows until nine hotbar slots are confirmed or the eligible rows are exhausted. Confirm each entry in a new hotbar slot, including its stack quantity, before advancing. If a selection remains unconfirmed at the next retry, close inventory, immediately reopen it, and resume the same ranked selection. Recheck the hotbar after reopening so a delayed success is preserved; reacquire the card by its original row identity and validate its name, tag, and Damage before clicking again. Retry only the current unconfirmed row while the hotbar is unchanged, and check capacity before every click; a nine-click cutoff must not skip eligible inventory rows. Recheck row identity, name, tag, and Damage before each click. Close inventory and read stable hotbar names/copy counts, including full stack quantities; unreadable counts keep retrying with periodic error logs.
+Check the shared unit-sequence cooldown before refreshing anything. If active, keep displayed units and skip. Reset Cooldown clears it; a new zone resets it. Validate the equipment mode, use cached zone/Density, check plot ownership, and start the sequence cooldown.
 
 AVAILABILITY CHECK
-Count whitelisted copies across displayed holders plus the refreshed hotbar. Require RequiredUnitCount and at least one matching copy. If the count is insufficient, FinalEquipMode is Best, or Density is 0, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
+Clear occupied hotbar assignments, open inventory, and count current-zone whitelisted copies directly from inventory, including stack quantities. At Density 2+, require a nonempty animation tag; Density 0-1 accepts either. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is 0, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
 
 REPLACEMENT / PLACEMENT
-Once eligible, require a ready character, close unit/inventory panels, pick up displayed units in holder order, and retry each removal until confirmed or the run is stopped, without a timeout or attempt limit. Refresh the hotbar again. Recheck the whitelisted hotbar count, equipment mode, and Density before placement.
+Once eligible, require a ready character, close panels, and remove all displayed units with confirmed pickup retries. Clear occupied hotbar assignments again, open inventory, and recheck available matching copies plus units already placed in required pads.
 
-Place matching hotbar copies in hotbar-slot order into the lowest empty unlocked holder. Continue through available matching copies until holders are full; RequiredUnitCount is the minimum, not a placement maximum. Validate hotbar identity, close previous focus, move to the holder, select the hotbar key, hold its prompt, and confirm Pick Up. Retry until confirmed or the run is stopped, without a timeout or attempt limit, unequipping tools before retries. Stop rather than type a placement key into a focused text field.
+Rank eligible inventory stacks by highest Damage, prefer _AnimTag on equal Damage, then preserve inventory order. Select only the highest ranked stack into hotbar 1. Confirm its stack quantity and that other hotbar slots are empty, close inventory, and place its copies in empty pads from M1 through M<RequiredUnitCount>. Never fill extra pads. If more required pads remain, clear the hotbar, reopen inventory, recount/rank remaining copies, and repeat with one stack through hotbar 1.
+
+If selection confirmation fails, close and immediately reopen inventory, recheck for delayed success, reacquire the same card, and retry without clearing the selected stack. Unreadable quantities, UI waits, pickup, and placement retry without timeouts and report periodic errors. Preserve character, plot, hotbar identity, focus/text-field, and held-input checks.
 
 MUTATION READINESS
-Mark this zone prepared only when the required-name count passes and at least one required matching unit was placed. Partial/failed preparation, cooldown skips, and Density 0 keep Mutate Units locked for this cycle. Character changes, occupied targets, or changed hotbar entries produce an error.]],
+Confirm whitelisted units occupy every required pad and provide that displayed-unit count to later stages. Partial/failed preparation, cooldown skips, and Density 0 keep Mutate Units locked.]],
         mutation = [[ENTRY CONDITIONS
 Use the cached zone/Density. Skip at Density 2+, when all RequiredMutations tier counts are zero, or when full Required Units preparation/count confirmation did not complete this cycle.
 
@@ -4556,82 +4555,141 @@ local function saveAndPrintHotbarSummary(operation)
     return summary
 end
 
-local function occupiedRequiredHotbarSlots(summary)
-    local occupied = 0
-    for _, entry in ipairs(summary) do
-        if entry.name ~= "" then occupied = occupied + 1 end
+local function closeRequiredInventory()
+    local function close()
+        local frame = inventoryFrame()
+        if visible(frame) then clickButton(path(frame, {"Content", "Actions", "Close"})) end
     end
-    return occupied
+    close()
+    waitUntil(function() return not visible(inventoryFrame()) end, nil,
+        "Closing Required Units inventory", close)
 end
 
-local function clickInventoryItems(densityLevel, zoneId)
-    local rule = RequiredUnitsByZone[zoneId]
-    local allowed = {}
-    for _, name in ipairs(rule and rule.Names or {}) do allowed[name] = true end
-    if next(allowed) == nil then return end
-    local requireAnimTag = densityLevel >= 2
-    local targets = waitUntil(function()
-        return inventoryTargets(inventoryScroll(), true)
-    end, LOAD_TIMEOUT, "Could not find clickable inventory items to check against " .. zoneId .. " Names.")
-    local clicked, skippedNames, skippedTags, skippedDamage = 0, 0, 0, 0
-    local addedRows, alreadySelected = 0, 0
-    local candidates = {}
+local function openRequiredInventory()
+    local function open()
+        if not visible(inventoryFrame()) then
+            clickButton(path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", "InventoryButton"}))
+        end
+    end
+    open()
+    waitUntil(function() return visible(inventoryFrame()) end, nil,
+        "Opening Required Units inventory", open)
+    pause(UI_SETTLE)
+end
+
+local function reopenRequiredInventory()
+    setStatus("Reopening inventory to resume the hotbar 1 selection...")
+    closeRequiredInventory()
+    openRequiredInventory()
+end
+
+local function clearRequiredHotbar(event, plot, phase)
+    local function clear()
+        checkPlot(plot)
+        local container = unitInteractionPath(playerGui, {"MineGui", "HotbarFrame", "Content", "Container"})
+        -- Clear occupied assignments only; absent/locked hotbar slots need no request.
+        -- Quantities need not be readable to remove an existing assignment.
+        for index = 1, 9 do
+            local slot = container:FindFirstChild(tostring(index))
+            local item = slot and slot:FindFirstChild("ItemFrame")
+            local content = item and item:FindFirstChild("Content")
+            local hidden = item and item:IsA("GuiObject") and not item.Visible
+            if not hidden and inventoryText(content and content:FindFirstChild("ItemName")) ~= "" then
+                checkAlive()
+                event:FireServer("MineAssignHotbar", tostring(index), "")
+            end
+        end
+    end
+    setStatus(phase .. ": emptying hotbar...")
+    local ok, reason = pcall(clear)
+    if not ok then logUnitUpgradeDetail(phase .. ": " .. tostring(reason)) end
+    pause(CONFIG.Units.HotbarClearDelay)
+    return readStableRequiredHotbar(phase .. ": confirming empty hotbar", function(summary)
+        for _, entry in ipairs(summary) do if entry.name ~= "" then return false end end
+        return true
+    end, clear, true)
+end
+
+local function scanRequiredInventory(densityLevel, zoneId)
+    local rule = RequiredUnitsByZone[zoneId] or {Names = {}}
+    local allowed, rows = {}, {}
+    for _, name in ipairs(rule.Names) do allowed[name] = true end
     local scroll = inventoryScroll()
-    local rows = {}
     for _, row in ipairs(scroll:GetChildren()) do
         if row:IsA("GuiObject") then rows[row.Name .. "\0" .. tostring(row.LayoutOrder)] = row end
     end
+    local candidates, signature = {}, {}
+    local total, skippedNames, skippedTags, skippedDamage = 0, 0, 0, 0
+    -- An empty inventory is a valid zero count; it may still pass with displayed units.
+    local targets = inventoryTargets(scroll, true) or {}
     for index, target in ipairs(targets) do
         checkAlive()
         local row = rows[target.name .. "\0" .. tostring(target.order)]
-        if not row then error("Inventory item changed before ranking: " .. target.name, 0) end
+        if not row then return nil, "Inventory rows changed while counting; waiting for a fresh scan." end
         local content = row:FindFirstChild("Content")
         local itemName = content and content:FindFirstChild("ItemName")
-        local name = inventoryText(itemName)
-        local tagged = taggedInventoryName(itemName)
+        local name, tagged = inventoryText(itemName), taggedInventoryName(itemName)
         if not allowed[name] then
             skippedNames = skippedNames + 1
-        elseif requireAnimTag and not tagged then
+        elseif densityLevel >= 2 and not tagged then
             skippedTags = skippedTags + 1
         else
             local damage = inventoryDamageKey(inventoryText(content and content:FindFirstChild("Damage")))
-            if damage then
-                table.insert(candidates, {target = target, row = row, name = name, tagged = tagged,
-                    damage = damage, index = index, copies = parseRequiredStackCount(inventoryText(content and content:FindFirstChild("ActualItemCount")))})
-            else
+            if not damage then
                 skippedDamage = skippedDamage + 1
+            else
+                local count = parseRequiredStackCount(inventoryText(content and content:FindFirstChild("ActualItemCount")))
+                if not count then return nil, "Unreadable inventory stack count for " .. name .. "; waiting for its quantity." end
+                table.insert(candidates, {target = target, row = row, name = name, tagged = tagged,
+                    damage = damage, index = index, count = count, source = "inventory"})
+                total = total + count
             end
         end
     end
     table.sort(candidates, higherInventoryPriority)
-    local slotSources = {}
-    local selectionClicks = 0
-    local function sameContents(left, right)
-        for index = 1, 9 do
-            if left[index].name ~= right[index].name or left[index].count ~= right[index].count then return false end
+    for _, entry in ipairs(candidates) do
+        table.insert(signature, string.format("%q:%s:%q:%s:%s:%s:%d", entry.target.name,
+            tostring(entry.target.order), entry.name, tostring(entry.tagged), tostring(entry.damage.power), entry.damage.digits, entry.count))
+    end
+    return {summary = candidates, total = total, skippedNames = skippedNames,
+        skippedTags = skippedTags, skippedDamage = skippedDamage}, table.concat(signature, "|")
+end
+
+local function readRequiredInventory(densityLevel, zoneId, operation)
+    local reportRetry = newRetryMonitor(operation)
+    local lastSignature, stableSince
+    while true do
+        checkAlive()
+        if not visible(inventoryFrame()) then openRequiredInventory() end
+        local result, signature = scanRequiredInventory(densityLevel, zoneId)
+        local problem = signature
+        if result then
+            if signature ~= lastSignature then lastSignature, stableSince = signature, os.clock() end
+            if os.clock() - stableSince >= UI_SETTLE then
+                logInfo("Required Units", string.format("%s density %d inventory count: %d whitelisted copies across %d stacks; skipped %d other names, %d untagged matches, %d unreadable Damage values.",
+                    zoneId, densityLevel, result.total, #result.summary, result.skippedNames, result.skippedTags, result.skippedDamage))
+                return result
+            end
+            problem = "Inventory names, ranking, and stack counts are still settling."
+        else
+            lastSignature, stableSince = nil, nil
         end
+        reportRetry(problem)
+        pause(CONFIG.General.WaitPoll)
+    end
+end
+
+local function selectRequiredStack(candidate)
+    local function confirmed(summary)
+        if summary[1].name ~= candidate.name or summary[1].count < candidate.count then return false end
+        for index = 2, 9 do if summary[index].name ~= "" then return false end end
         return true
     end
-    local function reopenInventory()
-        setStatus("Reopening inventory to continue the current Required Units selection...")
-        local function closeInventory()
-            local frame = inventoryFrame()
-            if visible(frame) then clickButton(path(frame, {"Content", "Actions", "Close"})) end
-        end
-        closeInventory()
-        waitUntil(function() return not visible(inventoryFrame()) end, nil,
-            "Closing inventory after an unconfirmed Required Units selection", closeInventory)
-        local function openInventory()
-            if not visible(inventoryFrame()) then
-                clickButton(path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", "InventoryButton"}))
-            end
-        end
-        openInventory()
-        waitUntil(function() return visible(inventoryFrame()) end, nil,
-            "Reopening inventory to resume the current Required Units selection", openInventory)
-        pause(UI_SETTLE)
-    end
-    local function resolveCandidateRow(candidate)
+    local function activate()
+        local summary = readRequiredHotbarSnapshot()
+        if not summary then return end
+        -- Do not toggle a selection off while its name/quantity is arriving.
+        for _, entry in ipairs(summary) do if entry.name ~= "" then return end end
         local match
         for _, row in ipairs(inventoryScroll():GetChildren()) do
             if row:IsA("GuiObject") and row.Name == candidate.target.name and row.LayoutOrder == candidate.target.order then
@@ -4639,117 +4697,30 @@ local function clickInventoryItems(densityLevel, zoneId)
                 match = row
             end
         end
-        if not match then error("Waiting for inventory row " .. candidate.target.name .. " (" .. candidate.name .. ") after reopening.", 0) end
+        if not match then error("Waiting for the selected inventory card " .. candidate.target.name .. " (" .. candidate.name .. ").", 0) end
         local content = match:FindFirstChild("Content")
         local itemName = content and content:FindFirstChild("ItemName")
         local damage = inventoryDamageKey(inventoryText(content and content:FindFirstChild("Damage")))
         if inventoryText(itemName) ~= candidate.name or taggedInventoryName(itemName) ~= candidate.tagged
             or not damage or damage.power ~= candidate.damage.power or damage.digits ~= candidate.damage.digits then
-            error("Inventory name/tag/Damage changed while selecting " .. candidate.name .. "; rerun to rank it again.", 0)
+            error("Inventory name/tag/Damage changed before selecting " .. candidate.name .. ".", 0)
         end
-        candidate.row = match
-        return match
+        if visible(match) then clickButton(match) end
     end
-    local function activateCandidate(candidate)
-        checkAlive()
+    setStatus(string.format("Selecting %s x%d for hotbar 1...", candidate.name, candidate.count))
+    local ok, reason = pcall(activate)
+    if not ok then logUnitUpgradeDetail("Hotbar 1 selection: " .. tostring(reason)) end
+    pause(CLICK_DELAY)
+    readStableRequiredHotbar("Confirming " .. candidate.name .. " in hotbar 1", confirmed, function()
         local current = readRequiredHotbarSnapshot()
-        if not current or occupiedRequiredHotbarSlots(current) >= 9 then return false end
-        local match = resolveCandidateRow(candidate)
-        if not visible(match) then return false end
-        selectionClicks = selectionClicks + 1
-        clickButton(match)
-        return true
-    end
-    local function recoverSelection(candidate, unchanged)
-        reopenInventory()
-        local current = readRequiredHotbarSnapshot()
-        -- The original click may complete while inventory is reopening. Preserve that result.
-        if current and sameContents(current, unchanged) then activateCandidate(candidate) end
-    end
-    -- Inspect all eligible rows, in damage order. Only confirmed occupied slots limit capacity.
-    for _, candidate in ipairs(candidates) do
-        checkAlive()
-        local before = readStableRequiredHotbar("Reading hotbar before selecting " .. candidate.name)
-        if occupiedRequiredHotbarSlots(before) >= 9 then break end
-        local expectedCopies = candidate.copies or waitUntil(function()
-            local content = resolveCandidateRow(candidate):FindFirstChild("Content")
-            return parseRequiredStackCount(inventoryText(content and content:FindFirstChild("ActualItemCount")))
-        end, nil, "Waiting for the inventory stack quantity of " .. candidate.name)
-        local function effect(summary)
-            -- A changed existing entry must be restored before considering lower-ranked rows.
-            for index = 1, 9 do
-                local old, current = before[index], summary[index]
-                if old.name ~= "" and (current.name ~= old.name or current.count ~= old.count) then
-                    return "changed", index
-                end
-            end
-            for index = 1, 9 do
-                local old, current = before[index], summary[index]
-                if old.name == "" and current.name == candidate.name and current.count >= expectedCopies then
-                    return "added", index
-                end
-            end
-            if occupiedRequiredHotbarSlots(summary) >= 9 then return "full" end
-            return nil
-        end
-        local function retrySelection()
-            local current = readRequiredHotbarSnapshot()
-            if current and effect(current) then return end
-            recoverSelection(candidate, before)
-        end
-        setStatus(string.format("Selecting ranked inventory row %d/%d: %s; verifying its hotbar slot...",
-            clicked + 1, #candidates, candidate.name))
-        activateCandidate(candidate)
-        clicked = clicked + 1
-        pause(CLICK_DELAY)
-        local selected = readStableRequiredHotbar(string.format("Confirming inventory row %s (%s x%d) in a new hotbar slot",
-            candidate.target.name, candidate.name, expectedCopies), function(summary)
-                return effect(summary) ~= nil
-            end, retrySelection, true)
-        local result, slotIndex = effect(selected)
-        if result == "full" then break end
-        if result == "changed" then
-            local source = slotSources[slotIndex]
-            if not source then
-                error("Hotbar slot " .. slotIndex .. " changed during selection; its original inventory row is unknown. No further rows selected.", 0)
-            end
-            activateCandidate(source)
-            readStableRequiredHotbar("Restoring the confirmed selection in hotbar slot " .. slotIndex, function(summary)
-                return sameContents(summary, before)
-            end, function()
-                local current = readRequiredHotbarSnapshot()
-                if current and sameContents(current, before) then return end
-                recoverSelection(source, selected)
-            end, true)
-            alreadySelected = alreadySelected + 1
-        else
-            slotSources[slotIndex] = candidate
-            addedRows = addedRows + 1
-        end
-    end
-    local verified = readStableRequiredHotbar("Verifying final Required Units inventory selections")
-    local occupied = occupiedRequiredHotbarSlots(verified)
-    local slots, copies = 0, 0
-    for _, entry in ipairs(verified) do
-        if allowed[entry.name] then slots, copies = slots + 1, copies + entry.count end
-    end
-    local reason = occupied >= 9 and "hotbar full" or "all eligible rows processed"
-    logInfo("Required Units", string.format("%s density %d inventory selection (highest Damage first, _AnimTag on ties): processed %d/%d eligible rows; %d click attempts; %d confirmed additions, %d restored duplicate/redundant rows; verified %d/9 matching slots containing %d copies including stacks. Stop: %s. Skipped %d other names, %d untagged matches, and %d unreadable damage values.",
-        zoneId, densityLevel, clicked, #candidates, selectionClicks, addedRows, alreadySelected, slots, copies,
-        reason, skippedNames, skippedTags, skippedDamage))
-end
-
-local function emptyPlacementSlots(plot)
-    local holders, slots = listSlots(plot, true)
-    local empty = {}
-    for _, slot in ipairs(slots) do
-        local prompt = unitInteractionPath(holders, {slot.name, "Pad", "HolderPrompt"})
-        if not prompt:IsA("ProximityPrompt") then error(slot.name .. " HolderPrompt is not a ProximityPrompt.", 0) end
-        if prompt.ActionText == "Place" then
-            table.insert(empty, slot.name)
-        end
-    end
-    return empty
+        if current and confirmed(current) then return end
+        reopenRequiredInventory()
+        activate()
+    end, true)
+    closeRequiredInventory()
+    local summary = readStableRequiredHotbar("Reading the confirmed hotbar 1 stack before placement", confirmed)
+    saveAndPrintHotbarSummary()
+    return summary[1]
 end
 
 local function closeUnitFocusForPlacement()
@@ -4831,112 +4802,95 @@ local function placeHotbarUnit(plot, holderName, entry, copy)
     end
 end
 
-local function finishEquipping(plot, zoneId, summary, densityLevel)
+local function requiredPlacementState(plot, zoneId)
+    local required = requiredSlotCount(zoneId)
+    local allowed, empty, displayed = {}, {}, {}
+    for _, name in ipairs(RequiredUnitsByZone[zoneId].Names) do allowed[name] = true end
+    local holders = unitInteractionPath(plot, {"Holders"})
+    for number = 1, required do
+        local holderName = "M" .. number
+        local prompt = holderPrompt(plot, holderName, true)
+        if hasPickUpAction(prompt) then
+            local name = waitUntil(function()
+                local current = readCharacterName(holders:FindFirstChild(holderName))
+                return current and allowed[current] and current
+            end, nil, "Waiting for a displayed whitelisted unit in " .. holderName)
+            table.insert(displayed, {name = name, count = 1, holder = holderName, source = "displayed"})
+        elseif prompt.ActionText == "Place" then
+            table.insert(empty, holderName)
+        else
+            return nil, nil, holderName .. ": waiting for its unlocked placement prompt."
+        end
+    end
+    return empty, displayed
+end
+
+local function finishEquipping(event, plot, zoneId, densityLevel)
+    local required = requiredSlotCount(zoneId)
     local function skipPlacement(reason)
         setStatus("Placement skipped: " .. reason)
-        logUnitUpgradeDetail("Required Units skipped placement after hotbar refresh: " .. reason)
+        logUnitUpgradeDetail("Required Units skipped serial placement: " .. reason)
         return "Placement skipped: " .. reason .. " Equip Best is handled at cycle end.", false, reason
     end
-    local rule = RequiredUnitsByZone[zoneId] or { RequiredUnitCount = 0, Names = {} }
-    local required = rule.RequiredUnitCount
-    if type(required) ~= "number" or required ~= required or required < 0
-        or required % 1 ~= 0 or required == math.huge then
-        error(zoneId .. ": RequiredUnitCount must be a finite nonnegative whole number.", 0)
-    end
-    local allowed = {}
-    for _, name in ipairs(rule.Names) do allowed[name] = true end
-    local matched = 0
-    for _, entry in ipairs(summary) do
-        if allowed[entry.name] then matched = matched + entry.count end
-    end
-    _G.MineHotbarMatchSummary = { zone = zoneId, matchedCount = matched, RequiredUnitCount = required }
-    recordMasterUnitCount(zoneId, matched)
-
-    logInfo("Required Units", string.format("%s refreshed hotbar: matched %d required-unit copies; RequiredUnitCount=%d.",
-        zoneId, matched, required))
     if FinalEquipMode == "Best" then return skipPlacement("FinalEquipMode is Best.") end
     if densityLevel == 0 then return skipPlacement("density level is 0.") end
-    if matched == 0 or matched < required then
-        return skipPlacement(string.format("%s: matched %d, required %d.", zoneId, matched, required))
-    end
-
-    local placementOrder = {}
-    for _, entry in ipairs(summary) do
-        if allowed[entry.name] and entry.count > 0 then
-            table.insert(placementOrder, entry)
-        end
-    end
-    table.sort(placementOrder, function(a, b)
-        return a.slot < b.slot
-    end)
-    local placed = 0
-
-    for _, entry in ipairs(placementOrder) do
-        if allowed[entry.name] then
-            for copy = 1, entry.count do
-                local empty = emptyPlacementSlots(plot)
-                if #empty == 0 then
-                    return string.format("%s: placed %d matching units; all holders filled.", zoneId, placed), placed > 0
-                end
-                local holderName = empty[1]
-                placeHotbarUnit(plot, holderName, entry, copy)
+    if required == 0 then return skipPlacement("RequiredUnitCount is zero; no required pads to fill.") end
+    local placed, batches = 0, 0
+    local reportRetry = newRetryMonitor("Filling required pads M1-M" .. required .. " through hotbar 1")
+    while true do
+        checkAlive()
+        checkPlot(plot)
+        local empty, displayed, problem = requiredPlacementState(plot, zoneId)
+        if not empty then
+            reportRetry(problem)
+            pause(CONFIG.General.RetryInterval)
+        elseif #empty == 0 then
+            -- Downstream mutation/upgrades receive the units actually occupying required pads.
+            unitCountSnapshot = {zone = zoneId, summary = displayed}
+            recordMasterUnitCount(zoneId, #displayed)
+            _G.MineHotbarMatchSummary = {zone = zoneId, matchedCount = #displayed,
+                displayedMatchedCount = #displayed, RequiredUnitCount = required}
+            return string.format("%s: placed %d matching units through hotbar 1 in %d batches; M1-M%d filled.",
+                zoneId, placed, batches, required), placed > 0
+        else
+            clearRequiredHotbar(event, plot, "Preparing hotbar 1 batch " .. (batches + 1))
+            openRequiredInventory()
+            local inventory = readRequiredInventory(densityLevel, zoneId, "Counting inventory before the next hotbar 1 batch")
+            local combined = {}
+            for _, entry in ipairs(inventory.summary) do table.insert(combined, entry) end
+            for _, entry in ipairs(displayed) do table.insert(combined, entry) end
+            unitCountSnapshot = {zone = zoneId, summary = combined}
+            local available = inventory.total + #displayed
+            recordMasterUnitCount(zoneId, available)
+            _G.MineHotbarMatchSummary = {zone = zoneId, matchedCount = available,
+                inventoryMatchedCount = inventory.total, displayedMatchedCount = #displayed, RequiredUnitCount = required}
+            if inventory.total < #empty then
+                closeRequiredInventory()
+                return skipPlacement(string.format("%s: inventory=%d, displayed required pads=%d; matched %d, required %d.",
+                    zoneId, inventory.total, #displayed, available, required))
+            end
+            local entry = selectRequiredStack(inventory.summary[1])
+            batches = batches + 1
+            -- One inventory stack may fill several required pads, but never M(required+1).
+            for copy = 1, math.min(entry.count, #empty) do
+                placeHotbarUnit(plot, empty[copy], entry, copy)
                 placed = placed + 1
             end
+            logInfo("Required Units", string.format("%s hotbar 1 batch %d: %s; filled %d/%d required pads.",
+                zoneId, batches, entry.name, #displayed + math.min(entry.count, #empty), required))
         end
     end
-    return string.format("%s: placed %d matching units (required %d, available %d).", zoneId, placed, required, matched), placed > 0
 end
 
-local function refreshRequiredHotbar(event, plot, densityLevel, zoneId, phase)
-    setStatus(phase .. ": refreshing hotbar...")
-    for index = 1, 9 do
-        setStatus(string.format("Clearing hotbar slot %d/9...", index))
-        checkPlot(plot)
-        checkAlive()
-        event:FireServer("MineAssignHotbar", tostring(index), "")
-    end
-    pause(CONFIG.Units.HotbarClearDelay)
-    readStableRequiredHotbar(phase .. ": confirming all hotbar slots are cleared", function(summary)
-        for _, entry in ipairs(summary) do if entry.name ~= "" then return false end end
-        return true
-    end, function()
-        checkPlot(plot)
-        for index = 1, 9 do
-            checkAlive()
-            event:FireServer("MineAssignHotbar", tostring(index), "")
-        end
-    end, true)
-    setStatus("Opening your bag...")
-
-    if not visible(inventoryFrame()) then
-        clickButton(path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", "InventoryButton"}))
-    end
-    waitUntil(function() return visible(inventoryFrame()) end,
-        ACTION_TIMEOUT, "Waiting for inventory to open after clicking InventoryButton.", function()
-            clickButton(path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", "InventoryButton"}))
-        end)
-    pause(UI_SETTLE)
-    clickInventoryItems(densityLevel, zoneId)
-    setStatus("Closing inventory...")
-    clickButton(path(playerGui, {"MineGui", "InventoryFrame", "Content", "Actions", "Close"}))
-    waitUntil(function() return not visible(inventoryFrame()) end,
-        ACTION_TIMEOUT, "Waiting for inventory to close after clicking Content.Actions.Close.", function()
-            clickButton(path(playerGui, {"MineGui", "InventoryFrame", "Content", "Actions", "Close"}))
-        end)
-    setStatus("Reading hotbar names and counts...")
-    pause(UI_SETTLE)
-    return saveAndPrintHotbarSummary(phase .. ": reading confirmed hotbar stacks")
-end
-
-local function combinedRequiredAvailability(plot, zoneId, hotbarSummary)
+local function combinedRequiredAvailability(plot, zoneId, inventorySummary)
     checkPlot(plot)
     local rule = RequiredUnitsByZone[zoneId] or {RequiredUnitCount = 0, Names = {}}
     local allowed, combined = {}, {}
     for _, name in ipairs(rule.Names or {}) do allowed[name] = true end
-    local hotbarMatched, displayedMatched = 0, 0
-    for _, entry in ipairs(hotbarSummary) do
+    local inventoryMatched, displayedMatched = 0, 0
+    for _, entry in ipairs(inventorySummary) do
         table.insert(combined, entry)
-        if allowed[entry.name] then hotbarMatched = hotbarMatched + entry.count end
+        if allowed[entry.name] then inventoryMatched = inventoryMatched + entry.count end
     end
     local holders, slots = listSlots(plot)
     for _, slot in ipairs(slots) do
@@ -4949,18 +4903,18 @@ local function combinedRequiredAvailability(plot, zoneId, hotbarSummary)
             end
         end
     end
-    local total = hotbarMatched + displayedMatched
+    local total = inventoryMatched + displayedMatched
     recordMasterUnitCount(zoneId, total)
     if modules.mutation and modules.mutation.observeProgress then modules.mutation.observeProgress(zoneId, plot) end
     unitCountSnapshot = {zone = zoneId, summary = combined}
     _G.MineHotbarMatchSummary = {zone = zoneId, matchedCount = total,
-        hotbarMatchedCount = hotbarMatched, displayedMatchedCount = displayedMatched,
+        inventoryMatchedCount = inventoryMatched, displayedMatchedCount = displayedMatched,
         RequiredUnitCount = rule.RequiredUnitCount}
-    logInfo("Required Units", string.format("%s availability: displayed=%d; hotbar=%d; combined=%d/%d.",
-        zoneId, displayedMatched, hotbarMatched, total, rule.RequiredUnitCount))
+    logInfo("Required Units", string.format("%s availability: displayed=%d; inventory=%d; combined=%d/%d.",
+        zoneId, displayedMatched, inventoryMatched, total, rule.RequiredUnitCount))
     local ready, reason = RequiredUnitCountMet(zoneId)
     if not ready then return false, reason end
-    if total == 0 then return false, zoneId .. ": no matching displayed or hotbar units." end
+    if total == 0 then return false, zoneId .. ": no matching displayed or inventory units." end
     return true
 end
 
@@ -4988,8 +4942,11 @@ local function runRequiredUnits()
     local densityLevel = modules.upgrades.getDensity()
 
     beginUnitSequence(zoneId)
-    local initialSummary = refreshRequiredHotbar(event, plot, densityLevel, zoneId, "Availability check")
-    local available, availabilityReason = combinedRequiredAvailability(plot, zoneId, initialSummary)
+    clearRequiredHotbar(event, plot, "Availability check")
+    openRequiredInventory()
+    local inventory = readRequiredInventory(densityLevel, zoneId, "Counting whitelisted inventory copies for RequiredUnitCount")
+    closeRequiredInventory()
+    local available, availabilityReason = combinedRequiredAvailability(plot, zoneId, inventory.summary)
     if not available or FinalEquipMode == "Best" or densityLevel == 0 then
         local reason = availabilityReason or (FinalEquipMode == "Best" and "FinalEquipMode is Best." or "density level is 0.")
         return "Skipped: " .. reason .. " Displayed units kept in place; Mutate Units skipped."
@@ -5001,9 +4958,7 @@ local function runRequiredUnits()
     originalRoot, originalCFrame = root, root.CFrame
     local removed = emptyDisplayUnits(plot, "Required count met")
 
-    local summary = refreshRequiredHotbar(event, plot, densityLevel, zoneId, "Placement preparation")
-    unitCountSnapshot = {zone = zoneId, summary = summary}
-    local finalResult, placedRequiredUnits, selectionReason = finishEquipping(plot, zoneId, summary, densityLevel)
+    local finalResult, placedRequiredUnits, selectionReason = finishEquipping(event, plot, zoneId, densityLevel)
     if modules.mutation and modules.mutation.observeProgress then modules.mutation.observeProgress(zoneId, plot) end
     local ready, reason = RequiredUnitCountMet(zoneId)
     if ready and placedRequiredUnits then
