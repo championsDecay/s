@@ -1368,7 +1368,7 @@ Skip if no displayed unit matches. Stop a unit at the target or when Damage is u
 Check the shared unit-sequence cooldown before refreshing anything. If it is active, keep displayed units and skip. Reset Cooldown clears it; a newly detected zone also resets it. Validate the equipment mode and required count, get the cached zone/Density, check the plot, and start the sequence cooldown.
 
 HOTBAR REFRESH / RANKING
-Clear all nine assignments, open inventory, and select up to nine current-zone Names matches. At Density 2+, require a nonempty animation tag. Skip unreadable Damage values. Rank by highest displayed Damage, prefer _AnimTag entries only on equal Damage, then preserve inventory order. Plan no more than the available nine hotbar slots, count every initial/retry/restore activation against that budget, and check capacity again before each click. Recheck row identity, name, tag, and Damage before each click. Close inventory and read stable hotbar names/copy counts, including full stack quantities; unreadable counts keep retrying with periodic error logs.
+Clear all nine assignments, open inventory, and select up to nine current-zone Names matches. At Density 2+, require a nonempty animation tag. Skip unreadable Damage values. Rank by highest displayed Damage, prefer _AnimTag entries only on equal Damage, then preserve inventory order. Continue through eligible rows until nine hotbar slots are confirmed or the eligible rows are exhausted. Confirm each entry in a new hotbar slot, including its stack quantity, before advancing. Retry only the current unconfirmed row while the hotbar is unchanged, and check capacity before every click; a nine-click cutoff must not skip eligible inventory rows. Recheck row identity, name, tag, and Damage before each click. Close inventory and read stable hotbar names/copy counts, including full stack quantities; unreadable counts keep retrying with periodic error logs.
 
 AVAILABILITY CHECK
 Count whitelisted copies across displayed holders plus the refreshed hotbar. Require RequiredUnitCount and at least one matching copy. If the count is insufficient, FinalEquipMode is Best, or Density is 0, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
@@ -4575,8 +4575,6 @@ local function clickInventoryItems(densityLevel, zoneId)
     end, LOAD_TIMEOUT, "Could not find clickable inventory items to check against " .. zoneId .. " Names.")
     local clicked, skippedNames, skippedTags, skippedDamage = 0, 0, 0, 0
     local addedRows, alreadySelected = 0, 0
-    local previousSelection = {}
-    local selectionClicks, selectionClosed = 0, false
     local candidates = {}
     local scroll = inventoryScroll()
     local rows = {}
@@ -4606,116 +4604,107 @@ local function clickInventoryItems(densityLevel, zoneId)
         end
     end
     table.sort(candidates, higherInventoryPriority)
-    local initial = readStableRequiredHotbar("Checking free slots before ranked inventory selection")
-    local selectionBudget = math.max(0, 9 - occupiedRequiredHotbarSlots(initial))
-    local selectionLimit = math.min(#candidates, selectionBudget)
-    -- Never advance to a tenth inventory row, even if delayed hotbar updates show fewer slots.
-    for candidateIndex = 1, selectionLimit do
-        checkAlive()
-        if selectionClosed or selectionClicks >= selectionBudget then break end
-        local candidate = candidates[candidateIndex]
-        local before = readStableRequiredHotbar("Reading hotbar before selecting " .. candidate.name)
-        if occupiedRequiredHotbarSlots(before) >= 9 then break end
-        local beforeCopies = hotbarCopiesOf(before, candidate.name)
-        -- A same-name row can toggle off an existing stack. Do not spend the last
-        -- activation when there would be no allowance left to restore the stronger selection.
-        if beforeCopies > 0 and selectionBudget - selectionClicks < 2 then continue end
-        local target = candidate.target
-        local match = nil
-        for _, row in ipairs(inventoryScroll():GetChildren()) do
-            if row:IsA("GuiObject") and row.Name == target.name and row.LayoutOrder == target.order then
-                if match then error("Inventory target became ambiguous: " .. target.name, 0) end
-                match = row
-            end
+    local slotSources = {}
+    local selectionClicks = 0
+    local function sameContents(left, right)
+        for index = 1, 9 do
+            if left[index].name ~= right[index].name or left[index].count ~= right[index].count then return false end
         end
-        if match ~= candidate.row then error("Inventory item changed before click: " .. target.name, 0) end
+        return true
+    end
+    local function activateCandidate(candidate)
+        checkAlive()
+        local current = readRequiredHotbarSnapshot()
+        if not current then return false end
+        local occupied = occupiedRequiredHotbarSlots(current)
+        if occupied >= 9 then return false end
+        local match = candidate.row
+        if match.Parent ~= inventoryScroll() or match.Name ~= candidate.target.name or match.LayoutOrder ~= candidate.target.order then
+            error("Inventory row changed while selecting " .. candidate.name, 0)
+        end
         local content = match:FindFirstChild("Content")
         local itemName = content and content:FindFirstChild("ItemName")
-        local name = inventoryText(itemName)
-
-        if not allowed[name] then
-            skippedNames = skippedNames + 1
-        elseif requireAnimTag and not taggedInventoryName(itemName) then
-            skippedTags = skippedTags + 1
+        local damage = inventoryDamageKey(inventoryText(content and content:FindFirstChild("Damage")))
+        if inventoryText(itemName) ~= candidate.name or taggedInventoryName(itemName) ~= candidate.tagged
+            or not damage or damage.power ~= candidate.damage.power or damage.digits ~= candidate.damage.digits then
+            error("Inventory name/tag/Damage changed while selecting " .. candidate.name .. "; rerun to rank it again.", 0)
+        end
+        selectionClicks = selectionClicks + 1
+        clickButton(match)
+        return true
+    end
+    -- Inspect all eligible rows, in damage order. Only confirmed occupied slots limit capacity.
+    for _, candidate in ipairs(candidates) do
+        checkAlive()
+        local before = readStableRequiredHotbar("Reading hotbar before selecting " .. candidate.name)
+        if occupiedRequiredHotbarSlots(before) >= 9 then break end
+        local content = candidate.row:FindFirstChild("Content")
+        local expectedCopies = candidate.copies or waitUntil(function()
+            return parseRequiredStackCount(inventoryText(content and content:FindFirstChild("ActualItemCount")))
+        end, nil, "Waiting for the inventory stack quantity of " .. candidate.name)
+        local function effect(summary)
+            -- A changed existing entry must be restored before considering lower-ranked rows.
+            for index = 1, 9 do
+                local old, current = before[index], summary[index]
+                if old.name ~= "" and (current.name ~= old.name or current.count ~= old.count) then
+                    return "changed", index
+                end
+            end
+            for index = 1, 9 do
+                local old, current = before[index], summary[index]
+                if old.name == "" and current.name == candidate.name and current.count >= expectedCopies then
+                    return "added", index
+                end
+            end
+            if occupiedRequiredHotbarSlots(summary) >= 9 then return "full" end
+            return nil
+        end
+        local function retrySelection()
+            local current = readRequiredHotbarSnapshot()
+            -- Once any result is arriving, wait for its quantities to settle rather than toggling it off.
+            if current and not sameContents(current, before) then return end
+            activateCandidate(candidate)
+        end
+        setStatus(string.format("Selecting ranked inventory row %d/%d: %s; verifying its hotbar slot...",
+            clicked + 1, #candidates, candidate.name))
+        activateCandidate(candidate)
+        clicked = clicked + 1
+        pause(CLICK_DELAY)
+        local selected = readStableRequiredHotbar(string.format("Confirming inventory row %s (%s x%d) in a new hotbar slot",
+            candidate.target.name, candidate.name, expectedCopies), function(summary)
+                return effect(summary) ~= nil
+            end, retrySelection)
+        local result, slotIndex = effect(selected)
+        if result == "full" then break end
+        if result == "changed" then
+            local source = slotSources[slotIndex]
+            if not source then
+                error("Hotbar slot " .. slotIndex .. " changed during selection; its original inventory row is unknown. No further rows selected.", 0)
+            end
+            activateCandidate(source)
+            readStableRequiredHotbar("Restoring the confirmed selection in hotbar slot " .. slotIndex, function(summary)
+                return sameContents(summary, before)
+            end, function()
+                local current = readRequiredHotbarSnapshot()
+                if current and not sameContents(current, selected) then return end
+                activateCandidate(source)
+            end)
+            alreadySelected = alreadySelected + 1
         else
-            local damage = inventoryDamageKey(inventoryText(content and content:FindFirstChild("Damage")))
-            if not damage or damage.power ~= candidate.damage.power or damage.digits ~= candidate.damage.digits then
-                error("Inventory damage changed before click: " .. target.name .. "; rerun to rank it again.", 0)
-            end
-            setStatus(string.format("Selecting required inventory row %d (%s); verifying hotbar copies...", clicked + 1, name))
-            local expectedCopies = candidate.copies or waitUntil(function()
-                local currentContent = match:FindFirstChild("Content")
-                return parseRequiredStackCount(inventoryText(currentContent and currentContent:FindFirstChild("ActualItemCount")))
-            end, nil, "Waiting for the inventory stack quantity of " .. name)
-            local function selectCandidate()
-                -- Recheck every initial/retry/restore click: stack copies do not consume extra slots.
-                local current = readRequiredHotbarSnapshot()
-                if not current then return false end
-                if occupiedRequiredHotbarSlots(current) >= 9 or selectionClicks >= selectionBudget then
-                    selectionClosed = true
-                    return false
-                end
-                if match.Parent ~= inventoryScroll() then error("Inventory row changed while selecting " .. name, 0) end
-                local currentContent = match:FindFirstChild("Content")
-                local currentName = currentContent and currentContent:FindFirstChild("ItemName")
-                if inventoryText(currentName) ~= name then
-                    error("Inventory unit changed while selecting " .. name, 0)
-                end
-                local currentDamage = inventoryDamageKey(inventoryText(currentContent and currentContent:FindFirstChild("Damage")))
-                if taggedInventoryName(currentName) ~= candidate.tagged or not currentDamage
-                    or currentDamage.power ~= candidate.damage.power or currentDamage.digits ~= candidate.damage.digits then
-                    error("Inventory tag/Damage changed while selecting " .. name .. "; rerun to rank it again.", 0)
-                end
-                selectionClicks = selectionClicks + 1
-                clickButton(match)
-                return true
-            end
-            selectCandidate()
-            if selectionClosed then break end
-            clicked = clicked + 1
-            pause(CLICK_DELAY)
-            local function retryCandidateSelection()
-                local current = readRequiredHotbarSnapshot()
-                -- A visible name with a delayed quantity is already selected; clicking
-                -- again could toggle it off while its stack label is still loading.
-                if current then
-                    local copies = hotbarCopiesOf(current, name)
-                    if copies > beforeCopies or copies >= expectedCopies then return end
-                end
-                selectCandidate()
-            end
-            local selected = readStableRequiredHotbar("Confirming inventory selection of " .. name, function(summary)
-                if selectionClosed then return true end
-                local copies = hotbarCopiesOf(summary, name)
-                if beforeCopies > 0 and copies < beforeCopies then return true end
-                return copies >= math.max(beforeCopies, expectedCopies)
-            end, retryCandidateSelection)
-            if selectionClosed then break end
-            local afterCopies = hotbarCopiesOf(selected, name)
-            if afterCopies < beforeCopies then
-                -- Clicking another row can toggle an already selected stack off. Restore it;
-                -- its copies were already counted and must never be added a second time.
-                local restoreSelection = previousSelection[name] or selectCandidate
-                restoreSelection()
-                readStableRequiredHotbar("Restoring the already selected stack of " .. name, function(summary)
-                    return selectionClosed or hotbarCopiesOf(summary, name) >= beforeCopies
-                end, restoreSelection)
-                alreadySelected = alreadySelected + 1
-            elseif afterCopies == beforeCopies then
-                alreadySelected = alreadySelected + 1
-            else
-                addedRows = addedRows + 1
-                previousSelection[name] = selectCandidate
-            end
+            slotSources[slotIndex] = candidate
+            addedRows = addedRows + 1
         end
     end
     local verified = readStableRequiredHotbar("Verifying final Required Units inventory selections")
+    local occupied = occupiedRequiredHotbarSlots(verified)
     local slots, copies = 0, 0
     for _, entry in ipairs(verified) do
         if allowed[entry.name] then slots, copies = slots + 1, copies + entry.count end
     end
-    logInfo("Required Units", string.format("%s density %d inventory selection (highest Damage first, _AnimTag on ties; activations %d/%d including retries): tried %d ranked rows; %d added selections, %d already-selected/redundant rows; verified %d/9 matching hotbar slots containing %d copies including stacks. Skipped %d other names, %d untagged matches, and %d unreadable damage values.",
-        zoneId, densityLevel, selectionClicks, selectionBudget, clicked, addedRows, alreadySelected, slots, copies, skippedNames, skippedTags, skippedDamage))
+    local reason = occupied >= 9 and "hotbar full" or "all eligible rows processed"
+    logInfo("Required Units", string.format("%s density %d inventory selection (highest Damage first, _AnimTag on ties): processed %d/%d eligible rows; %d click attempts; %d confirmed additions, %d restored duplicate/redundant rows; verified %d/9 matching slots containing %d copies including stacks. Stop: %s. Skipped %d other names, %d untagged matches, and %d unreadable damage values.",
+        zoneId, densityLevel, clicked, #candidates, selectionClicks, addedRows, alreadySelected, slots, copies,
+        reason, skippedNames, skippedTags, skippedDamage))
 end
 
 local function emptyPlacementSlots(plot)
