@@ -335,9 +335,10 @@ local CONFIG = {
         PlacementRetryDelay = 0.35,
         BestEquipDelay = 1.5,
         UISettleTime = 0.75,
+        InventorySettleTime = 0.2, -- Required Units inventory/hotbar confirmation only.
         DisplayRemoveDelay = 0.05,
-        InventoryClickDelay = 0.2,
-        HotbarClearDelay = 0.5,
+        InventoryClickDelay = 0.05,
+        HotbarClearDelay = 0.1,
         RemovalMinimumHold = 0.1,
         RemovalHoldPadding = 0.15,
         RemovalRetryDelay = 0.35,
@@ -1133,7 +1134,7 @@ local specs = {
     {"pickaxe", "Pickaxe", "Buy Best Pickaxe", "1. Open the shop, wait for it to refresh, then close it.\n2. Find the highest unlocked pickaxe.\n3. Check its saved limit and whether its buy button is green.\n4. Record and send one purchase request if eligible."},
     {"upgrades", "Upgrades", "Run Upgrades", "1. Open the skill tree and scan the current zone.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-7 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
     {"upgradingOldUnit", "Upgrade Old Units", "Run Upgrade Old Units", "1. Check that current-zone Density is 0.\n2. Find displayed units matching the previous zone's required names.\n3. Upgrade Damage toward the target, starting with the lowest level.\n4. Stop when the target is reached or further upgrades are unavailable."},
-    {"units", "Required Units", "Run Required Units", "1. Check cooldown and clear the hotbar.\n2. Count whitelisted inventory copies plus displayed units.\n3. If eligible, remove displayed units.\n4. Fill required pads using one stack at a time through hotbar 1."},
+    {"units", "Required Units", "Run Required Units", "1. Check cooldown and clear the hotbar.\n2. Count whitelisted inventory copies plus displayed units.\n3. If eligible, remove displayed units.\n4. Fill empty unlocked pads using one stack at a time through hotbar 1."},
     {"mutation", "Mutate Units", "Run Mutate Units", "1. Check zone rules, Density, and Required Units preparation.\n2. Scan mutations in the first required unlocked holders.\n3. Roll eligible units below the active targets.\n4. Rescan until the targets are met or further rolls are unavailable."},
     {"upgradingUnit", "Upgrade Units", "Run Upgrade Units", "1. Check cooldown and scan the required lineup.\n2. Upgrade Damage to the allowed cap, with stat catch-up between batches.\n3. Finish Speed and MineSpeed catch-up on eligible units."},
     {"cycleEnd", "Cycle end", "Run Cycle end", "1. Equip Best and wait for the equip delay.\n2. Select Current Zone if enabled.\n3. Select Next Zone if enabled.\n4. Attempt to unlock remaining holder slots."},
@@ -1373,9 +1374,9 @@ Clear occupied hotbar assignments, open inventory, and count current-zone whitel
 REPLACEMENT / PLACEMENT
 Once eligible, require a ready character, close panels, and remove all displayed units with confirmed pickup retries. Clear occupied hotbar assignments again, open inventory, and recheck available matching copies plus units already placed in required pads.
 
-Rank eligible inventory stacks by highest Damage, prefer _AnimTag on equal Damage, then preserve inventory order. Select only the highest ranked stack into hotbar 1. Confirm its stack quantity and that other hotbar slots are empty, close inventory, and place its copies in empty pads from M1 through M<RequiredUnitCount>. Never fill extra pads. If more required pads remain, clear the hotbar, reopen inventory, recount/rank remaining copies, and repeat with one stack through hotbar 1.
+Rank eligible inventory stacks by highest Damage, prefer _AnimTag on equal Damage, then preserve inventory order. Select only the highest ranked stack into hotbar 1. Confirm its stack quantity and that other hotbar slots are empty, keep inventory open, and place its copies in empty unlocked pads in holder-number order. Finish placing the selected stack before fetching another inventory card; confirm hotbar 1 is empty before loading another stack. Continue until every unlocked empty pad is filled, including pads beyond RequiredUnitCount, or no eligible inventory copies remain. RequiredUnitCount stays the minimum count gate. Keep inventory open between placement batches and close it when placement finishes or stops for insufficient copies.
 
-If selection confirmation fails, close and immediately reopen inventory, recheck for delayed success, reacquire the same card, and retry without clearing the selected stack. Unreadable quantities, UI waits, pickup, and placement retry without timeouts and report periodic errors. Preserve character, plot, hotbar identity, focus/text-field, and held-input checks.
+If selection confirmation fails, recheck for delayed success, reacquire the same card, and retry without clearing the selected stack or cycling inventory closed and open. Unreadable quantities, UI waits, pickup, and placement retry without timeouts and report periodic errors. Preserve character, plot, hotbar identity, focus/text-field, and held-input checks.
 
 MUTATION READINESS
 Confirm whitelisted units occupy every required pad and provide that displayed-unit count to later stages. Partial/failed preparation, cooldown skips, and Density 0 keep Mutate Units locked.]],
@@ -4161,7 +4162,7 @@ local EQUIP_SLOT_SETTLE = CONFIG.Units.EquipSlotDelay
 local PLACEMENT_KEY_HOLD = CONFIG.Units.PlacementKeyHold
 local PLACEMENT_SETTLE = CONFIG.Units.PlacementDelay
 local HOTBAR_KEYS = CONFIG.Units.HotbarKeys
-local UI_SETTLE = CONFIG.Units.UISettleTime
+local UI_SETTLE = CONFIG.Units.InventorySettleTime
 local DISPLAY_REMOVE_DELAY = CONFIG.Units.DisplayRemoveDelay
 local CLICK_DELAY = CONFIG.Units.InventoryClickDelay
 
@@ -4539,8 +4540,8 @@ local function hotbarCopiesOf(summary, name)
     return count
 end
 
-local function saveAndPrintHotbarSummary(operation)
-    local summary = readStableRequiredHotbar(operation or "Reading stable Required Units hotbar quantities")
+local function saveAndPrintHotbarSummary(operation, verifiedSummary)
+    local summary = verifiedSummary or readStableRequiredHotbar(operation or "Reading stable Required Units hotbar quantities")
     local total, occupied, details = 0, 0, {}
     for _, entry in ipairs(summary) do
         total = total + entry.count
@@ -4566,6 +4567,7 @@ local function closeRequiredInventory()
 end
 
 local function openRequiredInventory()
+    if visible(inventoryFrame()) then return end
     local function open()
         if not visible(inventoryFrame()) then
             clickButton(path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", "InventoryButton"}))
@@ -4575,12 +4577,6 @@ local function openRequiredInventory()
     waitUntil(function() return visible(inventoryFrame()) end, nil,
         "Opening Required Units inventory", open)
     pause(UI_SETTLE)
-end
-
-local function reopenRequiredInventory()
-    setStatus("Reopening inventory to resume the hotbar 1 selection...")
-    closeRequiredInventory()
-    openRequiredInventory()
 end
 
 local function clearRequiredHotbar(event, plot, phase)
@@ -4714,12 +4710,10 @@ local function selectRequiredStack(candidate)
     readStableRequiredHotbar("Confirming " .. candidate.name .. " in hotbar 1", confirmed, function()
         local current = readRequiredHotbarSnapshot()
         if current and confirmed(current) then return end
-        reopenRequiredInventory()
         activate()
     end, true)
-    closeRequiredInventory()
     local summary = readStableRequiredHotbar("Reading the confirmed hotbar 1 stack before placement", confirmed)
-    saveAndPrintHotbarSummary()
+    saveAndPrintHotbarSummary(nil, summary)
     return summary[1]
 end
 
@@ -4806,19 +4800,23 @@ local function requiredPlacementState(plot, zoneId)
     local required = requiredSlotCount(zoneId)
     local allowed, empty, displayed = {}, {}, {}
     for _, name in ipairs(RequiredUnitsByZone[zoneId].Names) do allowed[name] = true end
-    local holders = unitInteractionPath(plot, {"Holders"})
-    for number = 1, required do
-        local holderName = "M" .. number
+    local holders, slots = listSlots(plot, true)
+    -- Preserve required-pad checks while also including every extra unlocked empty pad.
+    for number = 1, required do holderPrompt(plot, "M" .. number, true) end
+    for _, slot in ipairs(slots) do
+        local holderName = slot.name
         local prompt = holderPrompt(plot, holderName, true)
         if hasPickUpAction(prompt) then
             local name = waitUntil(function()
                 local current = readCharacterName(holders:FindFirstChild(holderName))
-                return current and allowed[current] and current
-            end, nil, "Waiting for a displayed whitelisted unit in " .. holderName)
-            table.insert(displayed, {name = name, count = 1, holder = holderName, source = "displayed"})
+                return current and (allowed[current] or slot.number > required) and current
+            end, nil, "Waiting for a displayed unit in " .. holderName)
+            if allowed[name] then
+                table.insert(displayed, {name = name, count = 1, holder = holderName, source = "displayed"})
+            end
         elseif prompt.ActionText == "Place" then
             table.insert(empty, holderName)
-        else
+        elseif slot.number <= required then
             return nil, nil, holderName .. ": waiting for its unlocked placement prompt."
         end
     end
@@ -4836,7 +4834,16 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
     if densityLevel == 0 then return skipPlacement("density level is 0.") end
     if required == 0 then return skipPlacement("RequiredUnitCount is zero; no required pads to fill.") end
     local placed, batches = 0, 0
-    local reportRetry = newRetryMonitor("Filling required pads M1-M" .. required .. " through hotbar 1")
+    local reportRetry = newRetryMonitor("Filling empty unlocked pads through hotbar 1")
+    local function finish(displayed, detail)
+        closeRequiredInventory()
+        unitCountSnapshot = {zone = zoneId, summary = displayed}
+        recordMasterUnitCount(zoneId, #displayed)
+        _G.MineHotbarMatchSummary = {zone = zoneId, matchedCount = #displayed,
+            displayedMatchedCount = #displayed, RequiredUnitCount = required}
+        return string.format("%s: placed %d matching units through hotbar 1 in %d batches; %s",
+            zoneId, placed, batches, detail), placed > 0
+    end
     while true do
         checkAlive()
         checkPlot(plot)
@@ -4845,13 +4852,7 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
             reportRetry(problem)
             pause(CONFIG.General.RetryInterval)
         elseif #empty == 0 then
-            -- Downstream mutation/upgrades receive the units actually occupying required pads.
-            unitCountSnapshot = {zone = zoneId, summary = displayed}
-            recordMasterUnitCount(zoneId, #displayed)
-            _G.MineHotbarMatchSummary = {zone = zoneId, matchedCount = #displayed,
-                displayedMatchedCount = #displayed, RequiredUnitCount = required}
-            return string.format("%s: placed %d matching units through hotbar 1 in %d batches; M1-M%d filled.",
-                zoneId, placed, batches, required), placed > 0
+            return finish(displayed, "all unlocked pads filled.")
         else
             clearRequiredHotbar(event, plot, "Preparing hotbar 1 batch " .. (batches + 1))
             openRequiredInventory()
@@ -4864,20 +4865,29 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
             recordMasterUnitCount(zoneId, available)
             _G.MineHotbarMatchSummary = {zone = zoneId, matchedCount = available,
                 inventoryMatchedCount = inventory.total, displayedMatchedCount = #displayed, RequiredUnitCount = required}
-            if inventory.total < #empty then
+            if available < required then
                 closeRequiredInventory()
-                return skipPlacement(string.format("%s: inventory=%d, displayed required pads=%d; matched %d, required %d.",
+                return skipPlacement(string.format("%s: inventory=%d, displayed=%d; matched %d, required %d.",
                     zoneId, inventory.total, #displayed, available, required))
+            end
+            if inventory.total == 0 then
+                return finish(displayed, string.format("%d empty unlocked pads remain; no eligible inventory copies left.", #empty))
             end
             local entry = selectRequiredStack(inventory.summary[1])
             batches = batches + 1
-            -- One inventory stack may fill several required pads, but never M(required+1).
-            for copy = 1, math.min(entry.count, #empty) do
+            -- Consume this selected stack on empty pads before fetching another inventory card.
+            local copies = math.min(entry.count, #empty)
+            for copy = 1, copies do
                 placeHotbarUnit(plot, empty[copy], entry, copy)
                 placed = placed + 1
             end
-            logInfo("Required Units", string.format("%s hotbar 1 batch %d: %s; filled %d/%d required pads.",
-                zoneId, batches, entry.name, #displayed + math.min(entry.count, #empty), required))
+            if copies == entry.count and copies < #empty then
+                readStableRequiredHotbar("Confirming hotbar 1 is empty before selecting the next whitelisted stack", function(summary)
+                    return summary[1].name == ""
+                end)
+            end
+            logInfo("Required Units", string.format("%s hotbar 1 batch %d: %s; placed %d copies; %d empty unlocked pads remain.",
+                zoneId, batches, entry.name, copies, #empty - copies))
         end
     end
 end
