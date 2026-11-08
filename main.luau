@@ -127,7 +127,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = false,
                     Platinum = 0,
                     Rainbow = 0,
                     Frozen = 0,
@@ -141,7 +140,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = false,
                     Platinum = 0,
                     Rainbow = 0,
                     Frozen = 0,
@@ -155,7 +153,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = false,
                     Platinum = 0,
                     Rainbow = 0,
                     Frozen = 0,
@@ -169,7 +166,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 1,
                     Rainbow = 0,
                     Frozen = 0,
@@ -183,7 +179,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 5,
                     Rainbow = 1,
                     Frozen = 0,
@@ -199,7 +194,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 5,
                     Rainbow = 1,
                     Frozen = 2,
@@ -215,7 +209,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 5,
                     Rainbow = 1,
                     Frozen = 2,
@@ -231,7 +224,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 5,
                     Rainbow = 1,
                     Frozen = 2,
@@ -247,7 +239,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 5,
                     Rainbow = 1,
                     Frozen = 2,
@@ -263,7 +254,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 4,
                     Rainbow = 1,
                     Frozen = 1,
@@ -279,7 +269,6 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 4,
                     Rainbow = 1,
                     Frozen = 1,
@@ -295,7 +284,6 @@ local CONFIG = {
                 MaxLevelCap = 100,
                 DamageBatchSize = 100, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 0,
                     Rainbow = 0,
                     Frozen = 0,
@@ -311,7 +299,6 @@ local CONFIG = {
                 MaxLevelCap = 200,
                 DamageBatchSize = 200, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 0,
                     Rainbow = 0,
                     Frozen = 0,
@@ -327,7 +314,6 @@ local CONFIG = {
                 MaxLevelCap = 200,
                 DamageBatchSize = 200, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Enabled = true,
                     Platinum = 0,
                     Rainbow = 0,
                     Frozen = 0,
@@ -520,6 +506,14 @@ local function newRetryMonitor(operation)
             lastReport = now
         end
     end
+end
+
+local function hasMutationRequirements(rule)
+    for _, tier in ipairs(CONFIG.Mutation.Priority) do
+        local count = rule and rule[tier]
+        if type(count) == "number" and count > 0 then return true end
+    end
+    return false
 end
 
 local preferences = {
@@ -1218,7 +1212,7 @@ local mutationList = make("ScrollingFrame", pages.mutation.frame, {
     ScrollingDirection = Enum.ScrollingDirection.Y,
 })
 pages.master.status.Text = "OFF. Turn Master ON to repeat the cycle; click again to turn OFF."
-pages.mutation.status.Text = "Mutate only the first RequiredUnitCount unlocked holders. Disabled rules and cached cycle density 2+ skip rolling."
+pages.mutation.status.Text = "Mutate only the first RequiredUnitCount unlocked holders. Zero tier counts and cached cycle density 2+ skip rolling."
 pages.mutation.status.Size = UDim2.new(1, -36, 0, 40)
 renderMutationSettings = function()
     for _, row in ipairs(mutationList:GetChildren()) do row:Destroy() end
@@ -1230,8 +1224,8 @@ renderMutationSettings = function()
     for index, zone in ipairs(zones) do
         local settings = CONFIG.Units.RequiredByZone[zone].RequiredMutations or {}
         local caption = string.format(
-            "%s | Enabled: %s\nPlatinum: %d   Rainbow: %d   Frozen: %d\nInferno: %d   Nightmare: %d   Unreal: %d",
-            zone, tostring(settings.Enabled == true), settings.Platinum or 0, settings.Rainbow or 0,
+            "%s | Tier counts: %s\nDiamond: %d   Platinum: %d   Rainbow: %d\nFrozen: %d   Inferno: %d   Nightmare: %d   Unreal: %d",
+            zone, hasMutationRequirements(settings) and "configured" or "none", settings.Diamond or 0, settings.Platinum or 0, settings.Rainbow or 0,
             settings.Frozen or 0, settings.Inferno or 0, settings.Nightmare or 0, settings.Unreal or 0)
         label(mutationList, caption, UDim2.fromOffset(6, (index - 1) * 76), UDim2.new(1, -24, 0, 70), 12)
     end
@@ -1341,7 +1335,7 @@ Open the skill tree. Detect the highest numbered loaded Zone_Z<number> folder af
 Density is the highest green/upgraded Density node. Unknown node colors or an unsettled/missing tree are retried until ready or stopped; prolonged retries log errors. Confirmed Density 2+ stops mutation for that zone; a later confirmed lower Density clears a stale stop flag. Hide and save the tutorial button at Z2+ or at Z1 with Density 1+.
 
 UPGRADE SELECTION
-Recheck Colossus progress before and during upgrades. Prioritize the next available Density node. Density II requires every exact required slot M1..M<RequiredUnitCount> to hold a current-zone whitelisted unit at Diamond or higher, plus enabled mutation quotas. RequiredUnitCount zero passes this gate.
+Recheck Colossus progress before and during upgrades. Prioritize the next available Density node. Density II requires every exact required slot M1..M<RequiredUnitCount> to hold a current-zone whitelisted unit at Diamond or higher, plus configured mutation quotas. RequiredUnitCount zero passes this gate.
 
 Before Density is fully upgraded, other available nodes must be above its next-node row or on the same row within the configured tolerance. Rank them by horizontal distance, then row height, then name. When Density is maxed, consider all available non-Density nodes.
 
@@ -1387,9 +1381,9 @@ Place matching hotbar copies in hotbar-slot order into the lowest empty unlocked
 MUTATION READINESS
 Mark this zone prepared only when the required-name count passes and at least one required matching unit was placed. Partial/failed preparation, cooldown skips, and Density 0 keep Mutate Units locked for this cycle. Character changes, occupied targets, or changed hotbar entries produce an error.]],
         mutation = [[ENTRY CONDITIONS
-Use the cached zone/Density. Skip at Density 2+, when RequiredMutations.Enabled is false, when no required mutations are configured, or when full Required Units preparation/count confirmation did not complete this cycle.
+Use the cached zone/Density. Skip at Density 2+, when all RequiredMutations tier counts are zero, or when full Required Units preparation/count confirmation did not complete this cycle.
 
-Validate enabled quota counts and RequiredUnitCount; quota totals cannot exceed that count. Select only the first RequiredUnitCount unlocked holders by holder number. Require all selected holders to contain readable displayed mutations. Extra holders are excluded.
+Validate configured tier counts and RequiredUnitCount; quota totals cannot exceed that count. Select only the first RequiredUnitCount unlocked holders by holder number. Require all selected holders to contain readable displayed mutations. Extra holders are excluded.
 
 TARGETS
 All required units must reach Diamond or higher. Higher mutation ranks can satisfy lower-rank quotas; cumulative counts reserve the higher requirements first. Choose the lowest-ranked required unit, breaking ties by holder number.
@@ -1397,15 +1391,15 @@ All required units must reach Diamond or higher. Higher mutation ranks can satis
 ROLL ACTIONS
 Move to the selected holder, open its unit panel and Mutation tab, and require a green or orange Roll button. Recheck ownership, selected-holder scope, and the Density II stop flag before sending a roll.
 
-For Inferno/Nightmare/Unreal requirements, keep focus and rapidly roll toward the highest unmet cumulative target. Read the focused mutation after each roll, reconcile delayed holder labels, and stop if they fail to catch up. Otherwise send one roll, wait, close focus, and rescan.
+For Inferno/Nightmare/Unreal requirements, keep focus and rapidly roll toward the highest unmet cumulative target. Read the focused mutation after each roll. If a holder label is behind, reopen the same unit and verify its current panel mutation instead of waiting for an old exact-match label. Accept a higher displayed mutation; use the freshly verified panel value when the display is lower. Otherwise send one roll, wait, close focus, and rescan.
 
 STOP / COMPLETE
-Stop when required slots satisfy their Diamond minimum and applicable quotas, funds are unavailable, Density II is confirmed, required holders disappear, mutation text is unreadable, the character/plot changes, or a panel/scan times out. Update observed mutation progress as rolls complete and close focus during cleanup. Disabling rolling does not remove the Diamond requirement used by full Damage and Density II gates.]],
+Stop when required slots satisfy their Diamond minimum and applicable quotas, funds are unavailable, Density II is confirmed, required holders disappear, mutation text is unreadable, the character/plot changes, or a panel/scan times out. Update observed mutation progress as rolls complete and close focus during cleanup. Zero tier counts skip rolling but do not remove the Diamond requirement used by full Damage and Density II gates.]],
         upgradingUnit = [[ENTRY CONDITIONS
 Use the current cycle's Required Units sequence allowance when present. Otherwise check the shared cooldown and start a new sequence only when ready. Consume that allowance for this run. Validate cached Density, check plot ownership, close previous focus, and scan displayed units.
 
 FULL DAMAGE GATE
-The exact required slots must all be displayed, match current-zone Names, and be Diamond or higher. Enabled mutation quotas must pass. If the gate fails, only displayed current-zone whitelisted units receive Damage toward level 10; no other units receive Damage in that branch.
+The exact required slots must all be displayed, match current-zone Names, and be Diamond or higher. Configured mutation quotas must pass. If the gate fails, only displayed current-zone whitelisted units receive Damage toward level 10; no other units receive Damage in that branch.
 
 WHEN THE GATE PASSES
 Upgrade matching required units toward the zone MaxLevelCap. Confirm required units at cap before allowing Damage on cached extra displayed holders. Recheck the required lineup/quotas after core upgrades. Extras must still be displayed and cached. Their Damage target is half their own actual maximum from the Stats panel, rounded down; the zone MaxLevelCap does not limit extra Damage. The gate can fail when required count is zero; that does not grant unrestricted Damage upgrades.
@@ -1504,7 +1498,7 @@ Master attempts this stage after normal stages, including after a stage error, w
                         for _, name in ipairs({"Platinum", "Rainbow", "Frozen", "Inferno", "Nightmare", "Unreal"}) do
                             table.insert(quotas, name .. "=" .. tostring(mutations[name] or 0))
                         end
-                        table.insert(rows, "Mutation rules enabled: " .. tostring(mutations.Enabled == true)
+                        table.insert(rows, "Mutation tier counts configured: " .. tostring(hasMutationRequirements(mutations))
                             .. "; required units: " .. tostring(rule.RequiredUnitCount) .. "; " .. table.concat(quotas, ", "))
                     end
                     table.insert(settings, table.concat(rows, "\n"))
@@ -1643,7 +1637,7 @@ do
             quotas.Text = ""
             return
         end
-        local settings = rule.RequiredMutations or {Enabled = false}
+        local settings = rule.RequiredMutations or {}
         heading.Text = lastZone .. " requirements (cached)"
         local progress = masterRequirementProgress[lastZone] or {}
         local required = rule.RequiredUnitCount or 0
@@ -1655,11 +1649,11 @@ do
             quotaTotal = quotaTotal + (settings[name] or 0)
         end
         local diamondGoal = math.max(0, required - quotaTotal)
-        local state = settings.Enabled and "Enabled" or "Disabled (inactive)"
-        local diamondText = settings.Enabled and (diamondCurrent .. "/" .. tostring(diamondGoal)) or "Not required"
+        local state = hasMutationRequirements(settings) and "Tier counts configured" or "No tier quotas"
+        local diamondText = required > 0 and (diamondCurrent .. "/" .. tostring(diamondGoal)) or "Not required"
         mutation.Text = string.format("Mutations: %s\nDiamond+: %s", state, diamondText)
         local entries = {}
-        if settings.Enabled then
+        if hasMutationRequirements(settings) then
             for _, name in ipairs({"Platinum", "Rainbow", "Frozen", "Inferno", "Nightmare", "Unreal"}) do
                 local goal = settings[name] or 0
                 if goal > 0 then
@@ -1673,7 +1667,7 @@ do
             table.insert(rows, entries[index] .. (entries[index + 1] and ("   " .. entries[index + 1]) or ""))
         end
         quotas.Text = table.concat(rows, "\n")
-        quotas.TextColor3 = settings.Enabled and colors.text or colors.muted
+        quotas.TextColor3 = hasMutationRequirements(settings) and colors.text or colors.muted
     end
     refreshMasterRequirements()
 end
@@ -5142,13 +5136,12 @@ local function lowest(slots)
 end
 local function readMutationRequirements(zoneId)
     local zone = CONFIG.Units.RequiredByZone[zoneId] or {}
-    local rule = zone.RequiredMutations or {Enabled = false}
-    if type(rule.Enabled) ~= "boolean" then error(zoneId .. ": RequiredMutations.Enabled must be boolean.", 0) end
-    if not rule.Enabled then return rule, 0 end
+    local rule = zone.RequiredMutations or {}
     local RequiredUnitCount = requiredSlotCount(zoneId)
     local quotaTotal = 0
-    for rank = diamond + 1, #names do
-        local count = rule[names[rank]] or 0
+    for _, tier in ipairs(names) do
+        local count = rule[tier]
+        if count == nil then count = 0 end
         if type(count) ~= "number" or count ~= count or count < 0 or count % 1 ~= 0 or count == math.huge then
             error(zoneId .. ": RequiredMutations counts must be finite nonnegative whole numbers.", 0)
         end
@@ -5161,11 +5154,11 @@ local function readMutationRequirements(zoneId)
     return rule, RequiredUnitCount
 end
 local function requiredMutationCount(rule, RequiredUnitCount)
-    if not rule.Enabled then return 0 end
+    if not hasMutationRequirements(rule) then return 0 end
     return RequiredUnitCount
 end
 local function requirementsMet(slots, rule, RequiredUnitCount)
-    if not rule.Enabled then return true end
+    if not hasMutationRequirements(rule) then return true end
     local required, _, reason = splitUnitSlots(slots, RequiredUnitCount)
     if reason then return false end
     slots = required
@@ -5183,7 +5176,7 @@ local function requirementsMet(slots, rule, RequiredUnitCount)
     return true
 end
 local function mutationChoice(slots, rule, RequiredUnitCount)
-    if not rule.Enabled then return nil end
+    if not hasMutationRequirements(rule) then return nil end
     local required, _, reason = splitUnitSlots(slots, RequiredUnitCount)
     if reason then return nil end
     return lowest(required)
@@ -5246,6 +5239,49 @@ local function readFocusedRank()
     if not rank then error(reason, 0) end
     return rank
 end
+local function readStableFocusedMutation(slot, plot, operation)
+    local reportRetry = newRetryMonitor(operation)
+    local lastRank, stableSince
+    while true do
+        checkAlive()
+        checkPlot(plot)
+        if not slot.holder:IsDescendantOf(plot) then
+            error(slot.holder.Name .. ": holder was removed while verifying its current mutation.", 0)
+        end
+        if not mutationPanel() then
+            openSlot(slot, plot)
+            lastRank, stableSince = nil, nil
+        end
+        local ok, current = pcall(readFocusedRank)
+        if ok then
+            if current ~= lastRank then lastRank, stableSince = current, os.clock() end
+            if os.clock() - stableSince >= math.max(CONFIG.Mutation.RescanSettleTime, CONFIG.Mutation.PanelSettleTime) then
+                return current
+            end
+            reportRetry("Current panel mutation: " .. names[current] .. "; waiting for a stable reading.")
+        else
+            lastRank, stableSince = nil, nil
+            reportRetry("Cannot read the current mutation panel: " .. tostring(current))
+        end
+        pause(CONFIG.General.WaitPoll)
+    end
+end
+
+local function reconcileMutationObservation(slot, observed, plot)
+    if slot.rank >= observed.rank then return end
+    local displayedRank = slot.rank
+    openSlot(slot, plot)
+    local current = readStableFocusedMutation(slot, plot,
+        string.format("%s: verifying current mutation in the reopened panel (saved=%s, displayed=%s)",
+            slot.holder.Name, names[observed.rank], names[displayedRank]))
+    -- The current panel can be lower too if another queued roll finished after the saved result.
+    -- Use its verified value instead of waiting for an obsolete exact-match label.
+    slot.rank, slot.mutation = current, names[current]
+    logInfo("Mutate Units", string.format("%s: refreshed current mutation from its unit panel: saved=%s, displayed=%s, current=%s.",
+        slot.holder.Name, names[observed.rank], names[displayedRank], names[current]))
+    closeFocus()
+end
+
 local function focusTarget(slots, rule)
     local cumulative = 0
     for rank = #names, diamond + 1, -1 do
@@ -5265,7 +5301,7 @@ local function report(slots, heading)
 end
 local function recordMasterMutations(zoneId, slots)
     local rule = CONFIG.Units.RequiredByZone[zoneId] or {}
-    local settings = rule.RequiredMutations or {Enabled = false}
+    local settings = rule.RequiredMutations or {}
     local required = rule.RequiredUnitCount or 0
     local requiredSlots = splitUnitSlots(slots, required)
     local allowed, selected = {}, {}
@@ -5279,7 +5315,7 @@ local function recordMasterMutations(zoneId, slots)
     local quotaTotal = 0
 
     for rank = #names, diamond + 1, -1 do
-        local goal = settings.Enabled and (settings[names[rank]] or 0) or 0
+        local goal = settings[names[rank]] or 0
         quotaTotal = quotaTotal + goal
         local current = 0
         for index, slot in ipairs(selected) do
@@ -5297,7 +5333,7 @@ local function recordMasterMutations(zoneId, slots)
     local diamondGoal = math.max(0, required - quotaTotal)
     for index, slot in ipairs(selected) do
 
-        if settings.Enabled and not used[index] and slot.rank >= diamond and counts.Diamond < diamondGoal then
+        if not used[index] and slot.rank >= diamond and counts.Diamond < diamondGoal then
             counts.Diamond = counts.Diamond + 1
         end
     end
@@ -5336,7 +5372,7 @@ local function upgradeTargets(zoneId, displayed)
         selected[holderName] = true
     end
     if not requirementsMet(core, rule, requiredCount) then
-        return nil, nil, "Required slots do not meet enabled RequiredMutations quotas."
+        return nil, nil, "Required slots do not meet configured RequiredMutations quotas."
     end
     return core, selected
 end
@@ -5408,9 +5444,8 @@ end, run = function()
         return "Skipped: Cached cycle density is 2+ for " .. zoneId .. "; mutation is stopped for this zone."
     end
     local rule, RequiredUnitCount = readMutationRequirements(zoneId)
-    if not rule.Enabled then
-        logUnitUpgradeDetail(zoneId .. ": RequiredMutations.Enabled=false; skipping mutation rolling and higher upgrade quotas. Full Damage still requires Diamond+ in every required slot.")
-        return "Skipped: RequiredMutations.Enabled is false; no mutations required."
+    if not hasMutationRequirements(rule) then
+        return "Skipped: all RequiredMutations tier counts are zero; no mutation rolling required."
     end
     if requiredMutationCount(rule, RequiredUnitCount) == 0 then
         return "Skipped: RequiredUnitCount and mutation quotas are zero; no mutations required."
@@ -5439,8 +5474,13 @@ end, run = function()
         error(string.format("%s: mutation requirements need %d displayed units, but only %d are displayed. No roll sent.",
             zoneId, needed, #slots), 0)
     end
-    report(slots, string.format("Starting mutations for %s on %s: only the first %d unlocked slots need Diamond or higher including applicable quotas; extra slots are excluded.",
-        zoneId, plot.Name, needed))
+    local tierGoals = {}
+    for _, tier in ipairs(names) do
+        local count = rule[tier] or 0
+        if count > 0 then table.insert(tierGoals, tier .. "=" .. count) end
+    end
+    report(slots, string.format("Starting mutations for %s on %s: first %d unlocked slots need Diamond or higher. Required tier counts: %s. Extra slots are excluded.",
+        zoneId, plot.Name, needed, table.concat(tierGoals, ", ")))
     local rolls, loggedFirstRequest = 0, false
     local reportMutationRetries = newRetryMonitor("Meeting mutation quotas in " .. zoneId)
     local observedRanks = {}
@@ -5471,17 +5511,7 @@ end, run = function()
         for _, entry in ipairs(slots) do
             local observed = observedRanks[entry.holder]
             if observed then
-                if entry.rank ~= observed.rank then
-                    waitUntil(function()
-                        local refreshed = scanRequiredMutations(plot, RequiredUnitCount)
-                        for _, updated in ipairs(refreshed) do
-                            if updated.holder == entry.holder and updated.rank == observed.rank then
-                                entry.rank, entry.mutation = updated.rank, updated.mutation
-                                return true
-                            end
-                        end
-                    end, nil, entry.holder.Name .. ": waiting for the displayed mutation label to catch up.")
-                end
+                reconcileMutationObservation(entry, observed, plot)
                 observedRanks[entry.holder] = nil
             end
         end
@@ -5535,6 +5565,9 @@ end, run = function()
             sendRoll(choice)
 
             pause(CONFIG.Mutation.RollSettleTime)
+            local current = readStableFocusedMutation(choice, plot, choice.holder.Name .. ": confirming the mutation after rolling")
+            choice.rank, choice.mutation = current, names[current]
+            observedRanks[choice.holder] = {rank = current}
             pause(CONFIG.Mutation.BeforeExitDelay)
             closeFocus()
             pause(CONFIG.Mutation.RollDelay)
