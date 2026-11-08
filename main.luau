@@ -19,6 +19,13 @@ local CONFIG = {
         ButtonDebounce = 0.25,
         DefaultClickEvent = "MouseButton1Click",
     },
+    DailyRewards = {
+        DefaultSpinEnabled = true,
+        DefaultRedeemEnabled = true,
+        SpinInterval = 24 * 60 * 60 + 10,
+        CodeDelay = 2,
+        Codes = { "Hallowkeep", "Moonrise", "Feasts", "ONANDON", "ACES", "AZURE" },
+    },
     Flow = {
 
         DefaultMasterEnabled = false,
@@ -57,6 +64,7 @@ local CONFIG = {
 
         DefaultMaxPerID = 8,
         UnlimitedBestPickaxe = false,
+        WaitingClickDelay = 2,
         ShopTeleportDelay = 0.5,
         MinimumPromptHold = 0.05,
         PromptHoldPadding = 0.05,
@@ -549,6 +557,10 @@ local preferences = {
     tutorialHidden = false,
     firstLoadedAt = scriptLoadedAt,
     discordNotifications = {maxZone = {}, colossus = {}},
+    dailySpinEnabled = CONFIG.DailyRewards.DefaultSpinEnabled,
+    autoRedeemEnabled = CONFIG.DailyRewards.DefaultRedeemEnabled,
+    lastDailySpinAt = nil,
+    redeemedCodes = {},
     stages = {},
 }
 assert(type(preferences.masterEnabled) == "boolean", "CONFIG.Flow.DefaultMasterEnabled must be boolean.")
@@ -580,6 +592,10 @@ do
             tutorialHidden = preferences.tutorialHidden,
             firstLoadedAt = preferences.firstLoadedAt,
             discordNotifications = preferences.discordNotifications,
+            dailySpinEnabled = preferences.dailySpinEnabled,
+            autoRedeemEnabled = preferences.autoRedeemEnabled,
+            lastDailySpinAt = preferences.lastDailySpinAt,
+            redeemedCodes = preferences.redeemedCodes,
             stages = preferences.stages,
             selectCurrentZone = CONFIG.Upgrades.SelectCurrentZone,
             selectNextZone = CONFIG.Upgrades.SelectNextZone,
@@ -622,6 +638,18 @@ do
         preferences.masterEnabled = booleanOrDefault(data.masterEnabled, preferences.masterEnabled)
         preferences.masterActivatedOnce = booleanOrDefault(data.masterActivatedOnce, false)
         preferences.tutorialHidden = booleanOrDefault(data.tutorialHidden, false)
+        preferences.dailySpinEnabled = booleanOrDefault(data.dailySpinEnabled, preferences.dailySpinEnabled)
+        preferences.autoRedeemEnabled = booleanOrDefault(data.autoRedeemEnabled, preferences.autoRedeemEnabled)
+        local savedSpinAt = data.lastDailySpinAt
+        if type(savedSpinAt) == "number" and savedSpinAt > 0 and savedSpinAt < math.huge
+            and savedSpinAt == math.floor(savedSpinAt) then
+            preferences.lastDailySpinAt = savedSpinAt
+        end
+        if type(data.redeemedCodes) == "table" then
+            for code, sent in pairs(data.redeemedCodes) do
+                if type(code) == "string" and sent == true then preferences.redeemedCodes[code] = true end
+            end
+        end
         local savedFirstLoadedAt = data.firstLoadedAt
         local validFirstLoadedAt = type(savedFirstLoadedAt) == "number" and savedFirstLoadedAt > 0
             and savedFirstLoadedAt <= scriptLoadedAt and savedFirstLoadedAt == math.floor(savedFirstLoadedAt)
@@ -654,6 +682,7 @@ do
         if data.selectCurrentZone == nil or data.selectNextZone == nil or data.unlimitedBestPickaxe == nil
             or data.deleteOtherPlots == nil or data.workspaceCleanupEnabled == nil
             or data.tutorialHidden == nil or data.discordNotifications == nil
+            or data.dailySpinEnabled == nil or data.autoRedeemEnabled == nil or data.redeemedCodes == nil
             or not validFirstLoadedAt then
             savePreferences()
         end
@@ -924,6 +953,7 @@ local function cleanup(destroyGui)
     if minimizedActions.openWorker then pcall(task.cancel, minimizedActions.openWorker) end
     minimizedActions.openWorker = nil
     releaseInputs()
+    if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
     local unitUpgrade = rawget(modules, "upgradingUnit")
@@ -1144,6 +1174,7 @@ do
     local reportClickFailure = newRetryMonitor("Clicking the minimized UI idle area")
     local function clickPoint()
         if not alive or not minimized or not preferences.masterEnabled or dragging
+            or (modules.pickaxe and modules.pickaxe.isWaiting and modules.pickaxe.isWaiting())
             or not gui.Parent or not gui.Enabled or not panel.Visible
             or not minimizedControls.Visible or not clickArea.Visible or GuiService.MenuIsOpen then return nil end
         if not clickArea:IsDescendantOf(panel) then return nil end
@@ -1409,7 +1440,7 @@ Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Re
 
 Start each cycle with fresh cycle state. In the first cycle, enabled automatic Workspace cleanup runs once at the start, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
-On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, wait normally. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. Its area turns red while a reported retry/stage error is active and returns to its normal color after recovery. Expected mutation rolls are excluded.
+On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. Its area turns red while a reported retry/stage error is active and returns to its normal color after recovery. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
 Stop, Master OFF, unload, or the relevant shortcuts cancel active work and clean up movement, prompts, keys, and focused panels.
 
@@ -1445,7 +1476,7 @@ No lower-ID fallback is purchased when the highest unlocked tile is unavailable.
 Unavailable file functions, invalid or unreadable count data, a disappearing previously seen file, or unverifiable saves stop purchases. A count saved before a later cancellation or color change remains reserved. Counts represent reserved requests, rather than confirmed inventory purchases.
 
 BETWEEN MASTER CYCLES
-Master waits for its configured cycle delay. Idle clicks use the dedicated minimized-UI area described in the Master guide.]],
+During the cycle delay, open the shop and click visible buy buttons on rows with LayoutOrder 1 then 2 at the configured click interval. These use VirtualInputManager mouse-down/up clicks with a 0.05-second hold, separate from this stage's best-pickaxe limit/count reservation. Close the shop and restore position when the wait ends or is stopped. A shop-wait error uses the rest of the cycle delay. Minimized-area clicks resume afterward; their error-color indicator remains active throughout.]],
         upgrades = [[ZONE / DENSITY SCAN
 Open the skill tree. Detect the highest numbered loaded Zone_Z<number> folder after it settles. Cache its zone ID, folder name, and confirmed Density for the cycle. A changed zone clears the unit-sequence cooldown. The maximum configured zone is the highest numeric Z key in RequiredByZone, with no fixed zone-number limit.
 
@@ -1575,8 +1606,8 @@ Master attempts this stage after normal stages, including after a stage error, w
                     CONFIG.Sell.TeleportDelay, CONFIG.Sell.ChestDelay, CONFIG.Sell.StandDelay,
                     CONFIG.Sell.SelectAllDelay, CONFIG.Sell.SellDelay))
             elseif id == "pickaxe" then
-                table.insert(settings, string.format("Default limit: %d per ID (saved edits take priority). Unlimited best: %s.",
-                    CONFIG.Pickaxe.DefaultMaxPerID, tostring(CONFIG.Pickaxe.UnlimitedBestPickaxe)))
+                table.insert(settings, string.format("Default limit: %d per ID (saved edits take priority). Unlimited best: %s. Between-cycle click interval: %gs.",
+                    CONFIG.Pickaxe.DefaultMaxPerID, tostring(CONFIG.Pickaxe.UnlimitedBestPickaxe), CONFIG.Pickaxe.WaitingClickDelay))
             elseif id == "upgrades" then
                 table.insert(settings, string.format("Per-node requests: unlimited while available. Request delay: %gs. Row tolerance: %g.",
                     CONFIG.Upgrades.RequestDelay, CONFIG.Upgrades.RowScaleTolerance))
@@ -1696,9 +1727,36 @@ do
         UDim2.fromOffset(18, masterStageBottom + 150), UDim2.new(1, -36, 0, 28), 11)
 end
 
+do
+    local features = {
+        {key = "dailySpinEnabled", name = "AutoDailySpinToggle", caption = "Auto daily spin", offset = 184,
+            hint = "After the first Master cleanup check; repeats every 24 hours + 10 seconds."},
+        {key = "autoRedeemEnabled", name = "AutoRedeemToggle", caption = "Auto redeem codes", offset = 252,
+            hint = "After the spin check; sends each uncached code once, 2 seconds apart."},
+    }
+    for _, feature in ipairs(features) do
+        local toggle = button(pages.master.frame, "", UDim2.fromOffset(18, masterStageBottom + feature.offset), UDim2.new(1, -36, 0, 30))
+        toggle.Name, toggle.TextSize = feature.name, 12
+        local function refresh()
+            local enabled = preferences[feature.key]
+            toggle.Text = feature.caption .. ": " .. (enabled and "ON" or "OFF")
+            toggle.BackgroundColor3 = enabled and colors.accent or colors.bg
+        end
+        connect(toggle.Activated, function()
+            if not alive then return end
+            preferences[feature.key] = not preferences[feature.key]
+            savePreferences()
+            refresh()
+        end)
+        refresh()
+        label(pages.master.frame, feature.hint,
+            UDim2.fromOffset(18, masterStageBottom + feature.offset + 34), UDim2.new(1, -36, 0, 28), 11)
+    end
+end
+
 label(pages.master.frame,
     "SHORTCUTS (expanded or minimized)\nCtrl+1: Master ON/OFF   |   Ctrl+2: Enchant Roll ON/OFF\nCtrl+3: Altar   |   Ctrl+4: Events Board\nCtrl+5: Mailbox   |   Ctrl+6: Trial\nRoll and teleport shortcuts turn Master OFF. Ignored while typing.",
-    UDim2.fromOffset(18, masterStageBottom + 184), UDim2.new(1, -36, 0, 72), 12)
+    UDim2.fromOffset(18, masterStageBottom + 320), UDim2.new(1, -36, 0, 72), 12)
 
 do
     local toggle = button(pages.master.frame, "", UDim2.fromOffset(18, masterStageBottom + 48), UDim2.new(1, -36, 0, 30))
@@ -2670,6 +2728,62 @@ end
     end)
 end
 
+-- Start after the first Master cleanup check, including when cleanup is OFF.
+-- These features then use their own toggles and persist across Master stops.
+do
+    local started = false
+    local function saveRewardState()
+        if not savePreferences() then
+            logWarning("[Daily Rewards] Request sent, but its cache could not be saved; it may repeat after restarting.")
+        end
+    end
+    local function claimSpin()
+        if not alive or not preferences.dailySpinEnabled then return end
+        local lastSpin = preferences.lastDailySpinAt
+        if lastSpin and os.time() < lastSpin + CONFIG.DailyRewards.SpinInterval then return end
+        local event = getGameEvent()
+        if not alive or not preferences.dailySpinEnabled then return end
+        event:FireServer("MineDailySpin")
+        preferences.lastDailySpinAt = os.time()
+        saveRewardState()
+        logInfo("Daily Rewards", "Daily spin requested; next spin in 24 hours + 10 seconds.")
+    end
+    local function redeemCodes()
+        for _, code in ipairs(CONFIG.DailyRewards.Codes) do
+            if not alive or not preferences.autoRedeemEnabled then return end
+            if not preferences.redeemedCodes[code] then
+                local event = getGameEvent()
+                if not alive or not preferences.autoRedeemEnabled then return end
+                event:FireServer("UseCode", code)
+                -- FireServer has no reply; cache sent requests to avoid resending codes.
+                preferences.redeemedCodes[code] = true
+                saveRewardState()
+                logInfo("Daily Rewards", "Code redemption requested: " .. code)
+                task.wait(CONFIG.DailyRewards.CodeDelay)
+            end
+        end
+    end
+    modules.dailyRewards = {
+        start = function()
+            if started or not alive then return end
+            started = true
+            task.defer(function()
+                local thread = coroutine.running()
+                runScope.background[thread] = true
+                while alive do
+                    local ok, message = pcall(function()
+                        claimSpin()
+                        redeemCodes()
+                    end)
+                    if not ok and alive then logWarning("[Daily Rewards] " .. tostring(message)) end
+                    task.wait(ok and 1 or 15)
+                end
+                runScope.background[thread] = nil
+            end)
+        end,
+    }
+end
+
 local function checkPlot(plot)
     checkAlive()
     if not plot:IsDescendantOf(workspace)
@@ -3487,10 +3601,34 @@ connect(maxInput.FocusLost, function()
     if alive and not busy then applyMaxInput() end
 end)
 
-local function openPickaxeShop()
+local function openPickaxeShop(deadline)
+    local function shopWait(test, timeout, message, retryAction)
+        if not deadline then return waitUntil(test, timeout, message, retryAction) end
+        local expired = false
+        local result = waitUntil(function()
+            if os.clock() >= deadline then expired = true; return true end
+            return test()
+        end, timeout, message, retryAction)
+        if expired then error("Inter-cycle shop wait ended.", 0) end
+        return result
+    end
+    local function shopPath(parent, names)
+        if not deadline then return path(parent, names) end
+        for _, name in ipairs(names) do
+            parent = shopWait(function() return parent:FindFirstChild(name) end,
+                LOAD_TIMEOUT, "Missing pickaxe shop path component: " .. name)
+        end
+        return parent
+    end
+    local function shopPause(seconds)
+        if not deadline then return pause(seconds) end
+        pause(math.max(0, math.min(seconds, deadline - os.clock())))
+        if os.clock() >= deadline then error("Inter-cycle shop wait ended.", 0) end
+    end
+
     status.Text = "Refreshing the pickaxe shop..."
-    local character = waitUntil(function() return player.Character end, LOAD_TIMEOUT, "Character is missing.")
-    local root = path(character, {"HumanoidRootPart"})
+    local character = shopWait(function() return player.Character end, LOAD_TIMEOUT, "Character is missing.")
+    local root = shopPath(character, {"HumanoidRootPart"})
     originalRoot, originalCFrame = root, root.CFrame
     local lastRetryAngle
     local function visibleShop()
@@ -3503,7 +3641,7 @@ local function openPickaxeShop()
         if not player.Character or not root:IsDescendantOf(player.Character) then
             error("Character changed while opening the pickaxe shop. Run again after respawning.", 0)
         end
-        local stand = path(workspace, {"PickaxesStand"})
+        local stand = shopPath(workspace, {"PickaxesStand"})
         local prompt = stand:FindFirstChildWhichIsA("ProximityPrompt", true)
         if not prompt then error("PickaxesStand has no ProximityPrompt.", 0) end
         local part = prompt.Parent
@@ -3524,14 +3662,14 @@ local function openPickaxeShop()
         end
         root.CFrame = CFrame.new(position - part.CFrame.LookVector * distance + Vector3.new(0, CONFIG.Pickaxe.StandHeight, 0) + offset, position)
         root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-        pause(CONFIG.Pickaxe.ShopTeleportDelay)
+        shopPause(CONFIG.Pickaxe.ShopTeleportDelay)
         if not player.Character or not root:IsDescendantOf(player.Character) then
             error("Character changed while opening the pickaxe shop. Run again after respawning.", 0)
         end
         return prompt
     end
     local prompt = approachPickaxeStand()
-    waitUntil(function() return visibleShop() or (prompt.Parent and prompt.Enabled) end,
+    shopWait(function() return visibleShop() or (prompt.Parent and prompt.Enabled) end,
         LOAD_TIMEOUT, "PickaxesStand proximity prompt is disabled.", function() prompt = approachPickaxeStand(true) end)
     local function activateStand(isRetry)
         if visibleShop() then return end
@@ -3539,16 +3677,16 @@ local function openPickaxeShop()
         if visibleShop() or not prompt.Parent or not prompt.Enabled then return end
         heldPrompt = prompt
         prompt:InputHoldBegin()
-        pause(math.max(prompt.HoldDuration, CONFIG.Pickaxe.MinimumPromptHold) + CONFIG.Pickaxe.PromptHoldPadding)
+        shopPause(math.max(prompt.HoldDuration, CONFIG.Pickaxe.MinimumPromptHold) + CONFIG.Pickaxe.PromptHoldPadding)
         releaseInputs()
     end
     activateStand(false)
-    local shop = waitUntil(visibleShop, LOAD_TIMEOUT,
+    local shop = shopWait(visibleShop, LOAD_TIMEOUT,
         "Waiting for Pickaxe shop to open after activating its proximity prompt.", function() activateStand(true) end)
-    local list = path(shop, {"List"})
-    waitUntil(function() return list:FindFirstChild("Tile") end,
+    local list = shopPath(shop, {"List"})
+    shopWait(function() return list:FindFirstChild("Tile") end,
         LOAD_TIMEOUT, "Pickaxe shop opened, but no Tile children loaded.")
-    pause(SETTLE_TIME)
+    shopPause(SETTLE_TIME)
     return shop
 end
 
@@ -3561,7 +3699,93 @@ local function refreshPickaxeShop()
     restorePosition()
 end
 
+local waitingAtPickaxeShop = false
+
+local function clickWaitingBuyButton(button, deadline)
+    checkAlive()
+    local started = os.clock()
+    if started >= deadline then return nil end
+    local size = button.AbsoluteSize
+    if size.X <= 0 or size.Y <= 0 then return nil end
+
+    local inset = GuiService:GetGuiInset()
+    local center = button.AbsolutePosition + size * 0.5 + inset
+    local point = Vector2.new(math.round(center.X), math.round(center.Y))
+    mouseHeld = point
+    VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
+    pause(math.max(0, math.min(0.05, deadline - os.clock())))
+    releaseInputs()
+    return started
+end
+
+local function cleanupWaitingShop()
+    if not waitingAtPickaxeShop then return end
+    waitingAtPickaxeShop = false
+    releaseInputs()
+    local mine = playerGui:FindFirstChild("MineGui")
+    local shop = mine and mine:FindFirstChild("PickaxeShopFrame")
+    if shop and shop:IsA("GuiObject") then
+        local close = shop:FindFirstChild("Close")
+        if visible(shop) and close then pcall(clickButton, close) end
+
+        if shop.Parent then shop.Visible = false end
+    end
+    releaseInputs()
+    restorePosition()
+end
+
+local function waitAtPickaxeShop(seconds)
+    local deadline = os.clock() + math.max(0, seconds)
+    if os.clock() >= deadline then return end
+    waitingAtPickaxeShop = true
+    if modules.idleClick then modules.idleClick.stop() end
+    local ok, problem = pcall(function()
+        openPickaxeShop(deadline)
+        while os.clock() < deadline do
+            checkAlive()
+            local clicked = false
+            for layoutOrder = 1, 2 do
+
+                local mine = playerGui:FindFirstChild("MineGui")
+                local shop = mine and mine:FindFirstChild("PickaxeShopFrame")
+                if not visible(shop) then error("Pickaxe shop closed while waiting.", 0) end
+                local list = shop:FindFirstChild("List")
+                if list then
+                    for _, tile in ipairs(list:GetChildren()) do
+                        checkAlive()
+                        if os.clock() >= deadline then return end
+                        if tile.Name == "Tile" and tile:IsA("GuiObject") and tile.LayoutOrder == layoutOrder then
+                            local button = tile:FindFirstChild("BuyButton")
+                            if button and button:IsA("GuiButton") and visible(button) then
+                                local clickedAt = clickWaitingBuyButton(button, deadline)
+                                if clickedAt then
+                                    clicked = true
+                                    local nextClick = math.min(clickedAt + CONFIG.Pickaxe.WaitingClickDelay, deadline)
+                                    if nextClick > os.clock() then pause(nextClick - os.clock()) end
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            if not clicked then
+                pause(math.max(0, math.min(CONFIG.General.ScanPoll, deadline - os.clock())))
+            end
+        end
+    end)
+    cleanupWaitingShop()
+    checkAlive()
+    if not ok and os.clock() < deadline then logWarning("[Pickaxe wait] " .. tostring(problem)) end
+    local remaining = deadline - os.clock()
+    if remaining > 0 then pause(remaining) end
+end
+
 modules.pickaxe = {
+    waitBetweenCycles = waitAtPickaxeShop,
+    cleanupWaiting = cleanupWaitingShop,
+    isWaiting = function() return waitingAtPickaxeShop end,
     run = function()
         refreshPickaxeShop()
 
@@ -7643,6 +7867,7 @@ local function resetRun()
     runScope.current = nil
     modules.masterMovement.stop()
     releaseInputs()
+    if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
     local unitUpgrade = rawget(modules, "upgradingUnit")
@@ -7827,7 +8052,10 @@ startRun = function(id)
                     cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady, cycleBestEquipped = nil, nil, nil, false, false
                     resetStageRows()
                     local cycleOK, cycleError = pcall(function()
-                        if cycle == 1 then modules.workspaceCleanup.onCycleStart(cycle) end
+                        if cycle == 1 then
+                            modules.workspaceCleanup.onCycleStart(cycle)
+                            modules.dailyRewards.start()
+                        end
                         for _, stage in ipairs(order) do
                             -- Always visit Upgrades; OFF still opens the UI and scans fresh values.
                             if stage == "upgrades" then
@@ -7871,7 +8099,7 @@ startRun = function(id)
                         or string.format("Cycle %d had an error. Master ON; retrying in %g seconds.", cycle, CONFIG.Flow.CycleDelay)
                     pages.master.status.TextColor3 = (cycleOK and equipOK) and colors.success or colors.error
                     footer.Text = string.format("Master ON | Cycle %d | Next cycle in %g seconds", cycle, CONFIG.Flow.CycleDelay)
-                    pause(CONFIG.Flow.CycleDelay)
+                    modules.pickaxe.waitBetweenCycles(CONFIG.Flow.CycleDelay)
                 end
                 return "Master OFF."
             end
