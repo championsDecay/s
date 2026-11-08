@@ -1742,6 +1742,64 @@ local function clickButton(object)
     else firesignal(target.MouseButton1Click) end
 end
 
+local function tryUnitExit(focus, method)
+    local object = focus:FindFirstChild("ExitButton")
+    if not object then error("ExitButton is missing from " .. focus:GetFullName(), 0) end
+    local exit, reason = resolveButton(object)
+    if not exit then error("Cannot activate ExitButton: " .. tostring(reason), 0) end
+    if not visible(exit) then error("ExitButton is hidden: " .. exit:GetFullName(), 0) end
+    if method == "MouseClick" then
+        local size = exit.AbsoluteSize
+        if size.X <= 0 or size.Y <= 0 then error("ExitButton has no usable size.", 0) end
+        local screen = exit:FindFirstAncestorWhichIsA("ScreenGui")
+        local inset = screen and screen.IgnoreGuiInset and Vector2.zero or GuiService:GetGuiInset()
+        local center = exit.AbsolutePosition + size * 0.5 + inset
+        local point = Vector2.new(math.round(center.X), math.round(center.Y))
+        mouseHeld = point
+        VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
+        local ok, message = pcall(pause, 0.05)
+        releaseInputs()
+        if not ok then error(message, 0) end
+    else
+        if type(firesignal) ~= "function" then error("ExitButton signal activation needs firesignal.", 0) end
+        if method == "Activated" then firesignal(exit.Activated, nil, 1)
+        else firesignal(exit.MouseButton1Click) end
+    end
+end
+
+local function closeUnitPanel(operation, checkCurrent)
+    local methods = {"MouseButton1Click", "Activated", "MouseClick"}
+    local reportRetry = newRetryMonitor(operation or "Closing unit panel with ExitButton")
+    local attempt, nextAttempt, hiddenSince, sawPanel = 0, 0, nil, false
+    while true do
+        checkAlive()
+        if checkCurrent then checkCurrent() end
+        local mine = playerGui:FindFirstChild("MineGui")
+        local focus = mine and mine:FindFirstChild("SlotFocusFrame")
+        if not visible(focus) then
+            if not sawPanel then return end
+            hiddenSince = hiddenSince or os.clock()
+            if os.clock() - hiddenSince >= 0.1 then return end
+        else
+            sawPanel, hiddenSince = true, nil
+            if os.clock() >= nextAttempt then
+                attempt = attempt + 1
+                local method = methods[(attempt - 1) % #methods + 1]
+                local ok, message = pcall(tryUnitExit, focus, method)
+                checkAlive()
+                if checkCurrent then checkCurrent() end
+                local currentMine = playerGui:FindFirstChild("MineGui")
+                local currentFocus = currentMine and currentMine:FindFirstChild("SlotFocusFrame")
+                if visible(currentFocus) then
+                    reportRetry(ok and ("Tried " .. method .. "; " .. currentFocus:GetFullName() .. " is still visible.") or message)
+                end
+                nextAttempt = os.clock() + CONFIG.General.RetryInterval
+            end
+        end
+        pause(CONFIG.General.WaitPoll)
+    end
+end
+
 -- Collect visible offline rewards before each startup teleport attempt.
 -- Only movement after TeleportButton is clicked confirms startup readiness.
 do
@@ -3934,6 +3992,10 @@ local function unitInteractionPath(parent, names)
 end
 
 local function closeUnitInteractionPanel(frame, buttonPath, retryDelay)
+    if #buttonPath == 1 and buttonPath[1] == "ExitButton" then
+        closeUnitPanel("Closing unit panel with ExitButton before unit interaction")
+        return
+    end
     local reportRetry = newRetryMonitor("Closing unit/inventory panel " .. frame.Name)
     while frame.Parent and visible(frame) do
         checkAlive()
@@ -4176,7 +4238,8 @@ end
 
 local function inventoryText(label)
     if label and (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox")) then
-        return label.Text:match("^%s*(.-)%s*$")
+        return label.Text:gsub("<[^>]*>", ""):gsub("&nbsp;", " "):gsub("&amp;", "&")
+            :gsub("\194\160", " "):gsub("\226\128\139", ""):gsub("%s+", " "):match("^%s*(.-)%s*$")
     end
     return ""
 end
@@ -4196,6 +4259,105 @@ local function higherInventoryPriority(a, b)
     return a.index < b.index
 end
 
+local function parseRequiredStackCount(countText)
+    if countText == "" then return 1 end
+    local compact = countText:lower():gsub("×", "x"):gsub(",", ""):gsub("%s+", "")
+    local digits = compact:match("^x(%d+)$") or compact:match("^(%d+)x$") or compact:match("^(%d+)$")
+    local count = digits and tonumber(digits)
+    if count and count >= 1 and count < math.huge and count % 1 == 0 then return count end
+    return nil
+end
+
+local function readRequiredHotbarSnapshot()
+    local container = playerGui
+    for _, name in ipairs({"MineGui", "HotbarFrame", "Content", "Container"}) do
+        container = container and container:FindFirstChild(name)
+    end
+    if not container then return nil, "Hotbar container is not loaded." end
+    local summary, signature = {}, {}
+    for index = 1, 9 do
+        local slot = container:FindFirstChild(tostring(index))
+        local item = slot and slot:FindFirstChild("ItemFrame")
+        local content = item and item:FindFirstChild("Content")
+        local hidden = item and item:IsA("GuiObject") and not item.Visible
+        local name = not hidden and inventoryText(content and content:FindFirstChild("ItemName")) or ""
+        local count = 0
+        if name ~= "" then
+            local countLabel = content and content:FindFirstChild("ActualItemCount")
+            local countText = inventoryText(countLabel)
+            if countText == "" then
+                -- The game omits the quantity text for single copies. Only accept this
+                -- reading after the whole snapshot has stayed stable below.
+                count = 1
+            else
+                count = parseRequiredStackCount(countText)
+                if not count then
+                    return nil, string.format("Hotbar slot %d (%s): unreadable quantity %q; waiting for a valid stack count.", index, name, countText)
+                end
+            end
+        end
+        summary[index] = {slot = index, name = name, count = count}
+        signature[index] = string.format("%d:%q:%d", index, name, count)
+    end
+    return summary, table.concat(signature, "|")
+end
+
+local function readStableRequiredHotbar(operation, expected, retryAction, retryUnreadable)
+    local reportRetry = newRetryMonitor(operation)
+    local lastSignature, stableSince
+    local nextRetry = os.clock() + math.max(CONFIG.General.RetryInterval, UI_SETTLE * 2)
+    while true do
+        checkAlive()
+        local summary, signature = readRequiredHotbarSnapshot()
+        local ready, problem = false, signature
+        if summary then
+            ready = not expected or expected(summary)
+            if ready then
+                if signature ~= lastSignature then lastSignature, stableSince = signature, os.clock() end
+                if os.clock() - stableSince >= UI_SETTLE then return summary end
+                problem = "Hotbar names/stack counts are still settling."
+            else
+                lastSignature, stableSince = nil, nil
+                problem = "The requested hotbar change has not been confirmed."
+            end
+        else
+            lastSignature, stableSince = nil, nil
+        end
+        if retryAction and not ready and (summary or retryUnreadable) and os.clock() >= nextRetry then
+            local ok, message = pcall(retryAction)
+            checkAlive()
+            if not ok then problem = tostring(message) end
+            nextRetry = os.clock() + math.max(CONFIG.General.RetryInterval, UI_SETTLE * 2)
+        end
+        reportRetry(problem)
+        pause(CONFIG.General.WaitPoll)
+    end
+end
+
+local function hotbarCopiesOf(summary, name)
+    local count = 0
+    for _, entry in ipairs(summary) do
+        if entry.name == name then count = count + entry.count end
+    end
+    return count
+end
+
+local function saveAndPrintHotbarSummary(operation)
+    local summary = readStableRequiredHotbar(operation or "Reading stable Required Units hotbar quantities")
+    local total, occupied, details = 0, 0, {}
+    for _, entry in ipairs(summary) do
+        total = total + entry.count
+        if entry.name ~= "" then
+            occupied = occupied + 1
+            table.insert(details, string.format("slot %d: %s x%d", entry.slot, entry.name, entry.count))
+        end
+    end
+    _G.MineHotbarSummary, _G.MineHotbarTotalCount = summary, total
+    logInfo("Required Units", string.format("Verified hotbar: %d occupied slots, %d unit copies (including stacks). %s",
+        occupied, total, #details > 0 and table.concat(details, "; ") or "Hotbar is empty."))
+    return summary
+end
+
 local function clickInventoryItems(densityLevel, zoneId)
     local rule = RequiredUnitsByZone[zoneId]
     local allowed = {}
@@ -4206,6 +4368,8 @@ local function clickInventoryItems(densityLevel, zoneId)
         return inventoryTargets(inventoryScroll(), true)
     end, LOAD_TIMEOUT, "Could not find clickable inventory items to check against " .. zoneId .. " Names.")
     local clicked, skippedNames, skippedTags, skippedDamage = 0, 0, 0, 0
+    local addedRows, alreadySelected = 0, 0
+    local previousSelection = {}
     local candidates = {}
     local scroll = inventoryScroll()
     local rows = {}
@@ -4228,7 +4392,7 @@ local function clickInventoryItems(densityLevel, zoneId)
             local damage = inventoryDamageKey(inventoryText(content and content:FindFirstChild("Damage")))
             if damage then
                 table.insert(candidates, {target = target, row = row, name = name, tagged = tagged,
-                    damage = damage, index = index})
+                    damage = damage, index = index, copies = parseRequiredStackCount(inventoryText(content and content:FindFirstChild("ActualItemCount")))})
             else
                 skippedDamage = skippedDamage + 1
             end
@@ -4237,7 +4401,11 @@ local function clickInventoryItems(densityLevel, zoneId)
     table.sort(candidates, higherInventoryPriority)
     for _, candidate in ipairs(candidates) do
         checkAlive()
-        if clicked >= 9 then break end
+        local before = readStableRequiredHotbar("Reading hotbar before selecting " .. candidate.name)
+        local occupied = 0
+        for _, entry in ipairs(before) do if entry.name ~= "" then occupied = occupied + 1 end end
+        if occupied >= 9 then break end
+        local beforeCopies = hotbarCopiesOf(before, candidate.name)
         local target = candidate.target
         local match = nil
         for _, row in ipairs(inventoryScroll():GetChildren()) do
@@ -4260,63 +4428,62 @@ local function clickInventoryItems(densityLevel, zoneId)
             if not damage or damage.power ~= candidate.damage.power or damage.digits ~= candidate.damage.digits then
                 error("Inventory damage changed before click: " .. target.name .. "; rerun to rank it again.", 0)
             end
-            setStatus(string.format("Clicking required inventory item %d/9 (%s)...", clicked + 1, name))
-            clickButton(match)
+            setStatus(string.format("Selecting required inventory row %d (%s); verifying hotbar copies...", clicked + 1, name))
+            local expectedCopies = candidate.copies or waitUntil(function()
+                local currentContent = match:FindFirstChild("Content")
+                return parseRequiredStackCount(inventoryText(currentContent and currentContent:FindFirstChild("ActualItemCount")))
+            end, nil, "Waiting for the inventory stack quantity of " .. name)
+            local function selectCandidate()
+                if match.Parent ~= inventoryScroll() then error("Inventory row changed while selecting " .. name, 0) end
+                local currentContent = match:FindFirstChild("Content")
+                if inventoryText(currentContent and currentContent:FindFirstChild("ItemName")) ~= name then
+                    error("Inventory unit changed while selecting " .. name, 0)
+                end
+                clickButton(match)
+            end
+            selectCandidate()
             clicked = clicked + 1
             pause(CLICK_DELAY)
-        end
-    end
-    logInfo("Required Units", string.format("%s density %d inventory selection: clicked %d/9 whitelisted items (highest damage first, tagged on ties); skipped %d other names, %d untagged matches, and %d unreadable damage values.",
-        zoneId, densityLevel, clicked, skippedNames, skippedTags, skippedDamage))
-end
-
-local function saveAndPrintHotbarSummary()
-    local container = path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container"})
-    local summary = {}
-    local total = 0
-    local unreadableCounts = {}
-    for index = 1, 9 do
-        checkAlive()
-        local slot = container:FindFirstChild(tostring(index))
-        local item = slot and slot:FindFirstChild("ItemFrame")
-        local content = item and item:FindFirstChild("Content")
-        local nameLabel = content and content:FindFirstChild("ItemName")
-        local countLabel = content and content:FindFirstChild("ActualItemCount")
-        local function readText(label)
-            if label and (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox")) then
-                return label.Text:match("^%s*(.-)%s*$")
+            local function retryCandidateSelection()
+                local current = readRequiredHotbarSnapshot()
+                -- A visible name with a delayed quantity is already selected; clicking
+                -- again could toggle it off while its stack label is still loading.
+                if current then
+                    local copies = hotbarCopiesOf(current, name)
+                    if copies > beforeCopies or copies >= expectedCopies then return end
+                end
+                selectCandidate()
             end
-            return ""
-        end
-        local name = readText(nameLabel)
-        local countText = readText(countLabel)
-        local count = 0
-        if countText == "" then
-            count = name ~= "" and 1 or 0
-        else
-            local digits = countText:lower():gsub(",", ""):match("^x%s*(%d+)$")
-            if digits then
-                count = tonumber(digits) or 0
+            local selected = readStableRequiredHotbar("Confirming inventory selection of " .. name, function(summary)
+                local copies = hotbarCopiesOf(summary, name)
+                if beforeCopies > 0 and copies < beforeCopies then return true end
+                return copies >= math.max(beforeCopies, expectedCopies)
+            end, retryCandidateSelection)
+            local afterCopies = hotbarCopiesOf(selected, name)
+            if afterCopies < beforeCopies then
+                -- Clicking another row can toggle an already selected stack off. Restore it;
+                -- its copies were already counted and must never be added a second time.
+                local restoreSelection = previousSelection[name] or selectCandidate
+                restoreSelection()
+                readStableRequiredHotbar("Restoring the already selected stack of " .. name, function(summary)
+                    return hotbarCopiesOf(summary, name) >= beforeCopies
+                end, restoreSelection)
+                alreadySelected = alreadySelected + 1
+            elseif afterCopies == beforeCopies then
+                alreadySelected = alreadySelected + 1
             else
-                table.insert(unreadableCounts, string.format("slot %d=%q", index, countText))
+                addedRows = addedRows + 1
+                previousSelection[name] = selectCandidate
             end
         end
-        summary[index] = { slot = index, name = name, count = count }
-        total = total + count
     end
-    if #unreadableCounts > 0 then
-        logWarning("[MineBestHotbar] Unrecognized ActualItemCount; saved count 0 for "
-            .. table.concat(unreadableCounts, ", ") .. ".")
+    local verified = readStableRequiredHotbar("Verifying final Required Units inventory selections")
+    local slots, copies = 0, 0
+    for _, entry in ipairs(verified) do
+        if allowed[entry.name] then slots, copies = slots + 1, copies + entry.count end
     end
-
-    _G.MineHotbarSummary = summary
-    _G.MineHotbarTotalCount = total
-
-    for _, entry in ipairs(summary) do
-
-    end
-
-    return summary
+    logInfo("Required Units", string.format("%s density %d inventory selection: tried %d ranked rows; %d added selections, %d already-selected/redundant rows; verified %d/9 matching hotbar slots containing %d copies including stacks. Skipped %d other names, %d untagged matches, and %d unreadable damage values.",
+        zoneId, densityLevel, clicked, addedRows, alreadySelected, slots, copies, skippedNames, skippedTags, skippedDamage))
 end
 
 local function emptyPlacementSlots(plot)
@@ -4476,6 +4643,16 @@ local function refreshRequiredHotbar(event, plot, densityLevel, zoneId, phase)
         event:FireServer("MineAssignHotbar", tostring(index), "")
     end
     pause(CONFIG.Units.HotbarClearDelay)
+    readStableRequiredHotbar(phase .. ": confirming all hotbar slots are cleared", function(summary)
+        for _, entry in ipairs(summary) do if entry.name ~= "" then return false end end
+        return true
+    end, function()
+        checkPlot(plot)
+        for index = 1, 9 do
+            checkAlive()
+            event:FireServer("MineAssignHotbar", tostring(index), "")
+        end
+    end, true)
     setStatus("Opening your bag...")
 
     if not visible(inventoryFrame()) then
@@ -4495,7 +4672,7 @@ local function refreshRequiredHotbar(event, plot, densityLevel, zoneId, phase)
         end)
     setStatus("Reading hotbar names and counts...")
     pause(UI_SETTLE)
-    return saveAndPrintHotbarSummary()
+    return saveAndPrintHotbarSummary(phase .. ": reading confirmed hotbar stacks")
 end
 
 local function combinedRequiredAvailability(plot, zoneId, hotbarSummary)
@@ -4621,35 +4798,14 @@ local function mutationPanel()
     return visible(panel) and panel or nil
 end
 local function closeFocus()
-    local focus = focusFrame()
-    if not visible(focus) then ownsFocus = false; return end
-    clickButton(path(focus, {"ExitButton"}))
-    waitUntil(function() return not focus.Parent or not visible(focus) end,
-        CONFIG.Units.ActionTimeout, "Waiting for unit panel to close with ExitButton.", function() clickButton(path(focus, {"ExitButton"})) end)
+    closeUnitPanel("Closing mutation/unit panel with ExitButton")
     ownsFocus = false
 end
 local function cleanupFocus()
     if not ownsFocus then return end
     local focus = focusFrame()
-    local exit = focus and focus:FindFirstChild("ExitButton")
-    if visible(focus) and exit and exit:IsA("GuiButton") then
-
-        local eventName = CONFIG.General.DefaultClickEvent
-        if type(getconnections) == "function" then
-            local found = false
-            for _, name in ipairs({"MouseButton1Click", "Activated"}) do
-                local ok, handlers = pcall(getconnections, exit[name])
-                if ok and type(handlers) == "table" then
-                    for _, handler in pairs(handlers) do
-                        if handler.Enabled ~= false then eventName = name; found = true; break end
-                    end
-                end
-                if found then break end
-            end
-        end
-        if eventName == "Activated" then pcall(firesignal, exit.Activated, nil, 1)
-        else pcall(firesignal, exit.MouseButton1Click) end
-    end
+    if visible(focus) then pcall(tryUnitExit, focus, "MouseButton1Click") end
+    if visible(focus) then pcall(tryUnitExit, focus, "Activated") end
     ownsFocus = false
 end
 local function scanNow(plot, RequiredUnitCount)
@@ -5234,36 +5390,15 @@ local function statFocusFrame()
     return mine and mine:FindFirstChild("SlotFocusFrame")
 end
 local function closeStatFocus()
-    local focus = statFocusFrame()
-    if not visible(focus) then ownsStatFocus = false; return end
-    clickButton(path(focus, {"ExitButton"}))
-    waitUntil(function() return not focus.Parent or not visible(focus) end,
-        CONFIG.Units.ActionTimeout, "Waiting for unit Stats menu to close with ExitButton.", function() clickButton(path(focus, {"ExitButton"})) end)
+    closeUnitPanel("Closing unit Stats panel with ExitButton")
     ownsStatFocus = false
     pause(CONFIG.Units.StatUpgrade.PanelSettleTime)
 end
 local function cleanupStatFocus()
     if not ownsStatFocus then return end
     local focus = statFocusFrame()
-    local exit = focus and focus:FindFirstChild("ExitButton")
-    if visible(focus) and exit and exit:IsA("GuiButton") then
-
-        local eventName = CONFIG.General.DefaultClickEvent
-        if type(getconnections) == "function" then
-            local found = false
-            for _, name in ipairs({"MouseButton1Click", "Activated"}) do
-                local ok, handlers = pcall(getconnections, exit[name])
-                if ok and type(handlers) == "table" then
-                    for _, handler in pairs(handlers) do
-                        if handler.Enabled ~= false then eventName = name; found = true; break end
-                    end
-                end
-                if found then break end
-            end
-        end
-        if eventName == "Activated" then pcall(firesignal, exit.Activated, nil, 1)
-        else pcall(firesignal, exit.MouseButton1Click) end
-    end
+    if visible(focus) then pcall(tryUnitExit, focus, "MouseButton1Click") end
+    if visible(focus) then pcall(tryUnitExit, focus, "Activated") end
     ownsStatFocus = false
 end
 local function createUnitStatSession(plot, minimum)
@@ -6810,8 +6945,7 @@ actions[3] = function()
     assert(not occupied(), "M1 is already occupied; placement stopped to avoid picking it up")
     if visible(ui("SlotFocusFrame")) then
         pause(UI_TIMING.BeforeClose)
-        click(ui("SlotFocusFrame", "ExitButton"))
-        waitFor("Closing unit panel before placement", function() return not visible(ui("SlotFocusFrame")) end, nil, function() click(ui("SlotFocusFrame", "ExitButton")) end)
+        closeUnitPanel("Tutorial: closing unit panel before placement", checkFlow)
         pause(UI_TIMING.AfterClose)
     end
     local slot = waitFor("Waiting for hotbar slot 1", function()
@@ -6972,8 +7106,7 @@ actions[6] = function()
     click(ui("SlotFocusFrame", "BottomPanels", "StatsPanel", "Scroll", "Damage", "UpgradeButton"))
     waitFor("Confirming Damage level increased", function() return level() and level() > before end, nil, function() click(ui("SlotFocusFrame", "BottomPanels", "StatsPanel", "Scroll", "Damage", "UpgradeButton")) end)
     pause(UI_TIMING.BeforeClose)
-    click(ui("SlotFocusFrame", "ExitButton"))
-    waitFor("Confirming unit UI closed", function() return not visible(ui("SlotFocusFrame")) end, nil, function() click(ui("SlotFocusFrame", "ExitButton")) end)
+    closeUnitPanel("Tutorial: closing unit panel after upgrades", checkFlow)
     pause(UI_TIMING.AfterClose)
 end
 actions[7] = function()
