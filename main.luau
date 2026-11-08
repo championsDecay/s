@@ -6,7 +6,7 @@ local scriptLoadedAt = os.time()
 local CONFIG = {
     General = {
         DeleteOtherPlots = true,
-        WorkspaceCleanupEnabled = true,
+        WorkspaceCleanupEnabled = false,
         MasterFlySpeed = 40,
         LoadTimeout = math.huge, -- Unlimited waits; retry reports are configured under Logging.
         RetryInterval = 1,
@@ -21,7 +21,7 @@ local CONFIG = {
     },
     Flow = {
 
-        DefaultMasterEnabled = true,
+        DefaultMasterEnabled = false,
         DefaultStages = {
             sell = true,
             pickaxe = true,
@@ -545,6 +545,7 @@ end
 
 local preferences = {
     masterEnabled = CONFIG.Flow.DefaultMasterEnabled,
+    masterActivatedOnce = false,
     tutorialHidden = false,
     firstLoadedAt = scriptLoadedAt,
     discordNotifications = {maxZone = {}, colossus = {}},
@@ -575,6 +576,7 @@ do
             version = 1,
             gameId = tostring(game.GameId), userId = tostring(player.UserId),
             masterEnabled = preferences.masterEnabled,
+            masterActivatedOnce = preferences.masterActivatedOnce,
             tutorialHidden = preferences.tutorialHidden,
             firstLoadedAt = preferences.firstLoadedAt,
             discordNotifications = preferences.discordNotifications,
@@ -618,6 +620,7 @@ do
             return fallback
         end
         preferences.masterEnabled = booleanOrDefault(data.masterEnabled, preferences.masterEnabled)
+        preferences.masterActivatedOnce = booleanOrDefault(data.masterActivatedOnce, false)
         preferences.tutorialHidden = booleanOrDefault(data.tutorialHidden, false)
         local savedFirstLoadedAt = data.firstLoadedAt
         local validFirstLoadedAt = type(savedFirstLoadedAt) == "number" and savedFirstLoadedAt > 0
@@ -1680,6 +1683,7 @@ do
         toggle.Text = "Auto delete workspace extras: " .. (enabled and "ON" or "OFF")
         toggle.BackgroundColor3 = enabled and colors.accent or colors.bg
     end
+    pages.master.refreshWorkspaceCleanupToggle = refresh
     connect(toggle.Activated, function()
         if not alive then return end
         CONFIG.General.WorkspaceCleanupEnabled = not CONFIG.General.WorkspaceCleanupEnabled
@@ -2606,6 +2610,7 @@ local function scan(automatic)
 end
 
     local function refreshAutomaticStatus()
+        pages.master.refreshWorkspaceCleanupToggle()
         if automaticAttempted then return end
         status.Text = CONFIG.General.WorkspaceCleanupEnabled
             and "Auto cleanup: once at the start of the first Master cycle."
@@ -2614,6 +2619,12 @@ end
     end
     modules.workspaceCleanup = {
         refresh = refreshAutomaticStatus,
+        onMasterEnabled = function()
+            if preferences.masterActivatedOnce then return end
+            preferences.masterActivatedOnce = true
+            CONFIG.General.WorkspaceCleanupEnabled = true
+            refreshAutomaticStatus()
+        end,
         onCycleStart = function(cycle)
             if not alive or cycle ~= 1 or automaticAttempted or not CONFIG.General.WorkspaceCleanupEnabled then return end
             automaticAttempted = true
@@ -7743,6 +7754,7 @@ startRun = function(id)
     if alive and not modules.gameReady.isReady() then
         if id == "master" then
             preferences.masterEnabled = not preferences.masterEnabled
+            if preferences.masterEnabled then modules.workspaceCleanup.onMasterEnabled() end
             savePreferences()
             pages.master.run.Text = preferences.masterEnabled and "Master: ON - Waiting for game" or pages.master.runText
             minimizedMaster.Text = preferences.masterEnabled and "Master: Waiting" or "Master: OFF"
@@ -7780,6 +7792,7 @@ startRun = function(id)
     if id == "master" then
         minimizedActions.setRollEnabled(false)
         preferences.masterEnabled = true
+        modules.workspaceCleanup.onMasterEnabled()
         resetStageRows()
     end
     if not actionIsCurrent(token) then return end
