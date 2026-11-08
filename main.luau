@@ -57,7 +57,6 @@ local CONFIG = {
 
         DefaultMaxPerID = 8,
         UnlimitedBestPickaxe = false,
-        WaitingClickDelay = 2,
         ShopTeleportDelay = 0.5,
         MinimumPromptHold = 0.05,
         PromptHoldPadding = 0.05,
@@ -363,7 +362,7 @@ local CONFIG = {
         InitialTab = "master",
         Width = 620, Height = 620,
         ExpandedScale = 0.9,
-        MinimizedWidth = 360, MinimizedHeight = 192,
+        MinimizedWidth = 360, MinimizedHeight = 216,
         Colors = {
             bg = Color3.fromRGB(22, 25, 34), surface = Color3.fromRGB(31, 35, 47),
             muted = Color3.fromRGB(164, 174, 196), text = Color3.fromRGB(235, 240, 250),
@@ -894,7 +893,6 @@ local function cleanup(destroyGui)
     if minimizedActions.openWorker then pcall(task.cancel, minimizedActions.openWorker) end
     minimizedActions.openWorker = nil
     releaseInputs()
-    if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
     local unitUpgrade = rawget(modules, "upgradingUnit")
@@ -986,7 +984,7 @@ do
     tutorialButton.Name = "AutoCompleteTutorial"
     tutorialButton.TextSize = 14
     tutorialButton.TextWrapped = true
-    local tutorialStatus = label(minimizedControls, "", UDim2.fromOffset(0, 156), UDim2.new(1, 0, 0, 36), 11)
+    local tutorialStatus = label(minimizedControls, "", UDim2.fromOffset(0, 180), UDim2.new(1, 0, 0, 36), 11)
     tutorialStatus.TextWrapped = true
     pages.tutorial = {name = "Auto complete tutorial", run = tutorialButton, status = tutorialStatus, runText = "Auto complete tutorial"}
     minimizedActions.getHeight = function()
@@ -1098,6 +1096,72 @@ do
     end
     connect(minimize.Activated, function() setMinimized(not minimized) end)
     setMinimized(true)
+end
+
+do
+    local clickArea = button(minimizedControls, "Idle click area (every 2s)", UDim2.fromOffset(0, 156), UDim2.new(1, 0, 0, 20))
+    clickArea.Name, clickArea.TextSize = "MinimizedIdleClickArea", 10
+    clickArea.BackgroundColor3, clickArea.TextColor3 = colors.surface, colors.muted
+    clickArea.AutoButtonColor, clickArea.Selectable, clickArea.Active = false, false, true
+    clickArea.ZIndex = 5
+    pcall(function() clickArea.InputSink = Enum.InputSink.All end)
+    -- Intentionally no action handler: this area only receives the idle clicks.
+    local nextClickAt
+    local reportClickFailure = newRetryMonitor("Clicking the minimized UI idle area")
+    local function clickPoint()
+        if not alive or not minimized or not preferences.masterEnabled or dragging
+            or not gui.Parent or not gui.Enabled or not panel.Visible
+            or not minimizedControls.Visible or not clickArea.Visible or GuiService.MenuIsOpen then return nil end
+        if not clickArea:IsDescendantOf(panel) then return nil end
+        local camera = workspace.CurrentCamera
+        if not camera then return nil end
+        local inset = GuiService:GetGuiInset()
+        local areaPosition, areaSize = clickArea.AbsolutePosition, clickArea.AbsoluteSize
+        local panelPosition, panelSize = panel.AbsolutePosition, panel.AbsoluteSize
+        local viewport = camera.ViewportSize
+        -- AbsolutePosition and GUI hit testing share inset-relative coordinates.
+        -- Keep a two-pixel margin inside both the dedicated area and the panel.
+        local left = math.max(areaPosition.X + 2, panelPosition.X + 2, 2)
+        local top = math.max(areaPosition.Y + 2, panelPosition.Y + 2, 2)
+        local right = math.min(areaPosition.X + areaSize.X - 2, panelPosition.X + panelSize.X - 2, viewport.X - inset.X - 2)
+        local bottom = math.min(areaPosition.Y + areaSize.Y - 2, panelPosition.Y + panelSize.Y - 2, viewport.Y - inset.Y - 2)
+        if right <= left or bottom <= top then return nil end
+        local x, y = math.round((left + right) * 0.5), math.round((top + bottom) * 0.5)
+        if x < left or x > right or y < top or y > bottom then return nil end
+        -- When the UI is hosted under PlayerGui/CoreGui, also reject covered points.
+        local host = gui.Parent
+        while host and not host:IsA("BasePlayerGui") do host = host.Parent end
+        if host then
+            local hits = host:GetGuiObjectsAtPosition(x, y)
+            local front = hits[1]
+            if not front or (front ~= clickArea and not front:IsDescendantOf(clickArea)) then return nil end
+        end
+        return Vector2.new(x + inset.X, y + inset.Y)
+    end
+    connect(game:GetService("RunService").Heartbeat, function()
+        if not alive or not minimized or not preferences.masterEnabled then nextClickAt = nil; return end
+        local now = os.clock()
+        if not nextClickAt then nextClickAt = now + 2; return end
+        if now < nextClickAt then return end
+        nextClickAt = now + 2
+        local point
+        local ok, reason = pcall(function()
+            point = clickPoint()
+            if not point then return end
+            -- No yield or releaseInputs(): do not interrupt a stage's held key/prompt.
+            mouseHeld = point
+            VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
+            VIM:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
+            mouseHeld = nil
+        end)
+        if not ok then
+            if point then
+                local released = pcall(function() VIM:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0) end)
+                if released then mouseHeld = nil end
+            end
+            reportClickFailure(reason)
+        end
+    end)
 end
 
 local stageGuide
@@ -1293,7 +1357,7 @@ Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Re
 
 Start each cycle with fresh cycle state. In the first cycle, enabled automatic Workspace cleanup runs once at the start, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
-On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide.
+On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, wait normally. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel. This runs independently of the current stage.
 
 Stop, Master OFF, unload, or the relevant shortcuts cancel active work and clean up movement, prompts, keys, and focused panels.
 
@@ -1329,7 +1393,7 @@ No lower-ID fallback is purchased when the highest unlocked tile is unavailable.
 Unavailable file functions, invalid or unreadable count data, a disappearing previously seen file, or unverifiable saves stop purchases. A count saved before a later cancellation or color change remains reserved. Counts represent reserved requests, rather than confirmed inventory purchases.
 
 BETWEEN MASTER CYCLES
-During the cycle delay, open the shop and click visible buy buttons on rows with LayoutOrder 1 then 2 at the configured click interval. These are direct UI clicks, separate from this stage's best-pickaxe limit/count reservation. Close the shop and restore position when the wait ends or is stopped. A shop-wait error uses the rest of the cycle delay.]],
+Master waits for its configured cycle delay. Idle clicks use the dedicated minimized-UI area described in the Master guide.]],
         upgrades = [[ZONE / DENSITY SCAN
 Open the skill tree. Detect the highest numbered loaded Zone_Z<number> folder after it settles. Cache its zone ID, folder name, and confirmed Density for the cycle. A changed zone clears the unit-sequence cooldown. The maximum configured zone is the highest numeric Z key in RequiredByZone, with no fixed zone-number limit.
 
@@ -1459,8 +1523,8 @@ Master attempts this stage after normal stages, including after a stage error, w
                     CONFIG.Sell.TeleportDelay, CONFIG.Sell.ChestDelay, CONFIG.Sell.StandDelay,
                     CONFIG.Sell.SelectAllDelay, CONFIG.Sell.SellDelay))
             elseif id == "pickaxe" then
-                table.insert(settings, string.format("Default limit: %d per ID (saved edits take priority). Unlimited best: %s. Between-cycle click interval: %gs.",
-                    CONFIG.Pickaxe.DefaultMaxPerID, tostring(CONFIG.Pickaxe.UnlimitedBestPickaxe), CONFIG.Pickaxe.WaitingClickDelay))
+                table.insert(settings, string.format("Default limit: %d per ID (saved edits take priority). Unlimited best: %s.",
+                    CONFIG.Pickaxe.DefaultMaxPerID, tostring(CONFIG.Pickaxe.UnlimitedBestPickaxe)))
             elseif id == "upgrades" then
                 table.insert(settings, string.format("Per-node requests: unlimited while available. Request delay: %gs. Row tolerance: %g.",
                     CONFIG.Upgrades.RequestDelay, CONFIG.Upgrades.RowScaleTolerance))
@@ -3422,91 +3486,7 @@ local function refreshPickaxeShop()
     restorePosition()
 end
 
-local waitingAtPickaxeShop = false
-
-local function clickWaitingBuyButton(button, deadline)
-    checkAlive()
-    local started = os.clock()
-    if started >= deadline then return nil end
-    local size = button.AbsoluteSize
-    if size.X <= 0 or size.Y <= 0 then return nil end
-
-    local inset = GuiService:GetGuiInset()
-    local center = button.AbsolutePosition + size * 0.5 + inset
-    local point = Vector2.new(math.round(center.X), math.round(center.Y))
-    mouseHeld = point
-    VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
-    pause(math.max(0, math.min(0.05, deadline - os.clock())))
-    releaseInputs()
-    return started
-end
-
-local function cleanupWaitingShop()
-    if not waitingAtPickaxeShop then return end
-    waitingAtPickaxeShop = false
-    releaseInputs()
-    local mine = playerGui:FindFirstChild("MineGui")
-    local shop = mine and mine:FindFirstChild("PickaxeShopFrame")
-    if shop and shop:IsA("GuiObject") then
-        local close = shop:FindFirstChild("Close")
-        if visible(shop) and close then pcall(clickButton, close) end
-
-        if shop.Parent then shop.Visible = false end
-    end
-    releaseInputs()
-    restorePosition()
-end
-
-local function waitAtPickaxeShop(seconds)
-    local deadline = os.clock() + math.max(0, seconds)
-    if os.clock() >= deadline then return end
-    waitingAtPickaxeShop = true
-    local ok, problem = pcall(function()
-        openPickaxeShop(deadline)
-        while os.clock() < deadline do
-            checkAlive()
-            local clicked = false
-            for layoutOrder = 1, 2 do
-
-                local mine = playerGui:FindFirstChild("MineGui")
-                local shop = mine and mine:FindFirstChild("PickaxeShopFrame")
-                if not visible(shop) then error("Pickaxe shop closed while waiting.", 0) end
-                local list = shop:FindFirstChild("List")
-                if list then
-                    for _, tile in ipairs(list:GetChildren()) do
-                        checkAlive()
-                        if os.clock() >= deadline then return end
-                        if tile.Name == "Tile" and tile:IsA("GuiObject") and tile.LayoutOrder == layoutOrder then
-                            local button = tile:FindFirstChild("BuyButton")
-                            if button and button:IsA("GuiButton") and visible(button) then
-                                local clickedAt = clickWaitingBuyButton(button, deadline)
-                                if clickedAt then
-                                    clicked = true
-                                    local nextClick = math.min(clickedAt + CONFIG.Pickaxe.WaitingClickDelay, deadline)
-                                    if nextClick > os.clock() then pause(nextClick - os.clock()) end
-                                    break
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-
-            if not clicked then
-                pause(math.max(0, math.min(CONFIG.General.ScanPoll, deadline - os.clock())))
-            end
-        end
-    end)
-    cleanupWaitingShop()
-    checkAlive()
-    if not ok and os.clock() < deadline then logWarning("[Pickaxe wait] " .. tostring(problem)) end
-    local remaining = deadline - os.clock()
-    if remaining > 0 then pause(remaining) end
-end
-
 modules.pickaxe = {
-    waitBetweenCycles = waitAtPickaxeShop,
-    cleanupWaiting = cleanupWaitingShop,
     run = function()
         refreshPickaxeShop()
 
@@ -7549,7 +7529,6 @@ local function resetRun()
     runScope.current = nil
     modules.masterMovement.stop()
     releaseInputs()
-    if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
     local unitUpgrade = rawget(modules, "upgradingUnit")
@@ -7774,7 +7753,7 @@ startRun = function(id)
                         or string.format("Cycle %d had an error. Master ON; retrying in %g seconds.", cycle, CONFIG.Flow.CycleDelay)
                     pages.master.status.TextColor3 = (cycleOK and equipOK) and colors.success or colors.error
                     footer.Text = string.format("Master ON | Cycle %d | Next cycle in %g seconds", cycle, CONFIG.Flow.CycleDelay)
-                    modules.pickaxe.waitBetweenCycles(CONFIG.Flow.CycleDelay)
+                    pause(CONFIG.Flow.CycleDelay)
                 end
                 return "Master OFF."
             end
