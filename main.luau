@@ -1312,7 +1312,7 @@ Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+
 HOTBAR UPGRADES
 Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the eight-stage cycle. Place each selected copy, check its identity, upgrade Damage toward the configured target and Speed/Mining to their available maxima, then pick it up before the next copy. Stop on changed hotbar identity/count, missing M1 controls, unavailable upgrades, or failed placement/removal confirmation.]],
         sell = [[ACTIONS
-1. Startup clicks OfflineFrame.Content.CollectButton when the offline popup is visible, waits 0.5 seconds, then clicks TeleportButton. Attempts repeat once per second until the same character moves more than 10 studs after a teleport click. A hidden or absent offline popup does not block retries.
+1. Startup clicks OfflineFrame.Content.CollectButton when the offline popup is visible, waits 0.5 seconds, then clicks TeleportButton. Each click is observed for up to one second; attempts continue until the same character moves more than 10 studs after a teleport click. A hidden or absent offline popup does not block retries. A missing/hidden TeleportButton or a click without confirmed movement triggers a chest prompt/open-close recovery before retrying; chest recovery movement never confirms a teleport.
 2. Teleport to your plot, wait, and collect the plot chest.
 3. Teleport to the Hub. Move in front of the sell stand, face the camera toward it, and activate its prompts.
 4. Hold the enabled sell prompt for its required duration, then wait for the game to open the sell window with visible ancestors.
@@ -1742,33 +1742,139 @@ local function clickButton(object)
     else firesignal(target.MouseButton1Click) end
 end
 
+local getMyPlot
+
+local function recoverUnitPanelThroughChest(checkCurrent, operation)
+    local recoveryName = operation or "ExitButton recovery"
+    local function check()
+        checkAlive()
+        if checkCurrent then checkCurrent() end
+    end
+    check()
+    local plot = getMyPlot()
+    local chest = path(plot, {"Chest"})
+    local base = path(chest, {"ChestBase"})
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root or not base:IsA("BasePart") then error(recoveryName .. ": character or ChestBase is unavailable.", 0) end
+    local savedCFrame = root.CFrame
+    local ownsPosition = not originalRoot
+    if ownsPosition then originalRoot, originalCFrame = root, savedCFrame end
+    local function checkTarget()
+        check()
+        if player.Character ~= character or not root:IsDescendantOf(character) then
+            error("Character changed during " .. recoveryName .. ".", 0)
+        end
+        if not plot:IsDescendantOf(workspace) or tonumber(plot:GetAttribute("OwnerUserId")) ~= player.UserId
+            or not chest:IsDescendantOf(plot) then
+            error("Plot/chest ownership changed during " .. recoveryName .. ".", 0)
+        end
+    end
+    local function chestFrame()
+        local mine = playerGui:FindFirstChild("MineGui")
+        return mine and mine:FindFirstChild("ChestFrame")
+    end
+    local function triggerChest()
+        checkTarget()
+        local prompt = waitUntil(function()
+            checkTarget()
+            local found
+            for _, candidate in ipairs(chest:GetDescendants()) do
+                if candidate:IsA("ProximityPrompt") and candidate.Enabled then
+                    if found then error("Multiple enabled chest prompts found during " .. recoveryName .. ".", 0) end
+                    found = candidate
+                end
+            end
+            return found
+        end, nil, recoveryName .. ": waiting for your chest proximity prompt")
+        local parent = prompt.Parent
+        local position = parent:IsA("Attachment") and parent.WorldPosition or base.Position
+        local height = math.min(CONFIG.Units.TeleportHeight, math.max(0.1, prompt.MaxActivationDistance * 0.5))
+        root.CFrame = CFrame.new(position + Vector3.new(0, height, 0), position)
+        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+        pause(CONFIG.Units.TeleportDelay)
+        checkTarget()
+        heldPrompt = prompt
+        prompt:InputHoldBegin()
+        -- Match the existing chest prompt hold behavior, then close as soon as its UI opens.
+        local ok, message = pcall(pause, math.max(prompt.HoldDuration, 2) + 0.5)
+        releaseInputs()
+        if not ok then error(message, 0) end
+    end
+    local function findClose(frame)
+        for _, names in ipairs({{"Content", "Actions", "Close"}, {"Content", "Actions", "CloseButton"},
+            {"CloseButton"}, {"ExitButton"}, {"Close"}}) do
+            local candidate = frame
+            for _, name in ipairs(names) do candidate = candidate and candidate:FindFirstChild(name) end
+            if candidate and visible(candidate) then
+                local button = resolveButton(candidate)
+                if button then return button end
+            end
+        end
+        local found
+        for _, candidate in ipairs(frame:GetDescendants()) do
+            local name = candidate.Name:lower():gsub("[%s%p]", "")
+            if candidate:IsA("GuiButton") and visible(candidate)
+                and (name == "close" or name == "closebutton" or name == "exit" or name == "exitbutton"
+                    or candidate:IsA("TextButton") and candidate.Text:match("^%s*[xX×]%s*$")) then
+                if found then error("Multiple chest close buttons found during " .. recoveryName .. ".", 0) end
+                found = candidate
+            end
+        end
+        return found
+    end
+    local closeAttempts = 0
+    local function closeChest()
+        checkTarget()
+        local frame = chestFrame()
+        if not visible(frame) then return end
+        local button = findClose(frame)
+        if not button then error(recoveryName .. ": chest Close button is not ready.", 0) end
+        if type(firesignal) ~= "function" then error("Chest closing needs firesignal.", 0) end
+        closeAttempts = closeAttempts + 1
+        if closeAttempts % 2 == 1 then firesignal(button.MouseButton1Click)
+        else firesignal(button.Activated, nil, 1) end
+    end
+    local ok, message = pcall(function()
+        triggerChest()
+        waitUntil(function()
+            checkTarget()
+            return visible(chestFrame())
+        end, nil, recoveryName .. ": waiting for the chest UI to open", triggerChest)
+        -- This interaction only resets the UI; it never requests chest contents.
+        pcall(closeChest)
+        waitUntil(function()
+            checkTarget()
+            return not visible(chestFrame())
+        end, nil, recoveryName .. ": closing the chest UI", closeChest)
+    end)
+    releaseInputs()
+    local stillCurrent = pcall(check)
+    if stillCurrent and player.Character == character and root:IsDescendantOf(character) then
+        pcall(function()
+            root.CFrame = savedCFrame
+            root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+        end)
+    end
+    if stillCurrent and ownsPosition and originalRoot == root and originalCFrame == savedCFrame then
+        originalRoot, originalCFrame = nil, nil
+    end
+    if not ok then error(message, 0) end
+end
+
 local function tryUnitExit(focus, method)
     local object = focus:FindFirstChild("ExitButton")
     if not object then error("ExitButton is missing from " .. focus:GetFullName(), 0) end
     local exit, reason = resolveButton(object)
     if not exit then error("Cannot activate ExitButton: " .. tostring(reason), 0) end
     if not visible(exit) then error("ExitButton is hidden: " .. exit:GetFullName(), 0) end
-    if method == "MouseClick" then
-        local size = exit.AbsoluteSize
-        if size.X <= 0 or size.Y <= 0 then error("ExitButton has no usable size.", 0) end
-        local screen = exit:FindFirstAncestorWhichIsA("ScreenGui")
-        local inset = screen and screen.IgnoreGuiInset and Vector2.zero or GuiService:GetGuiInset()
-        local center = exit.AbsolutePosition + size * 0.5 + inset
-        local point = Vector2.new(math.round(center.X), math.round(center.Y))
-        mouseHeld = point
-        VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
-        local ok, message = pcall(pause, 0.05)
-        releaseInputs()
-        if not ok then error(message, 0) end
-    else
-        if type(firesignal) ~= "function" then error("ExitButton signal activation needs firesignal.", 0) end
-        if method == "Activated" then firesignal(exit.Activated, nil, 1)
-        else firesignal(exit.MouseButton1Click) end
-    end
+    if type(firesignal) ~= "function" then error("ExitButton signal activation needs firesignal.", 0) end
+    if method == "Activated" then firesignal(exit.Activated, nil, 1)
+    else firesignal(exit.MouseButton1Click) end
 end
 
 local function closeUnitPanel(operation, checkCurrent)
-    local methods = {"MouseButton1Click", "Activated", "MouseClick"}
+    local methods = {"MouseButton1Click", "Activated"}
     local reportRetry = newRetryMonitor(operation or "Closing unit panel with ExitButton")
     local attempt, nextAttempt, hiddenSince, sawPanel = 0, 0, nil, false
     while true do
@@ -1788,10 +1894,19 @@ local function closeUnitPanel(operation, checkCurrent)
                 local ok, message = pcall(tryUnitExit, focus, method)
                 checkAlive()
                 if checkCurrent then checkCurrent() end
+                pause(SETTLE_TIME)
                 local currentMine = playerGui:FindFirstChild("MineGui")
                 local currentFocus = currentMine and currentMine:FindFirstChild("SlotFocusFrame")
                 if visible(currentFocus) then
-                    reportRetry(ok and ("Tried " .. method .. "; " .. currentFocus:GetFullName() .. " is still visible.") or message)
+                    local recovered, recoveryMessage = pcall(recoverUnitPanelThroughChest, checkCurrent)
+                    checkAlive()
+                    if checkCurrent then checkCurrent() end
+                    currentMine = playerGui:FindFirstChild("MineGui")
+                    currentFocus = currentMine and currentMine:FindFirstChild("SlotFocusFrame")
+                    if visible(currentFocus) or not recovered then
+                        reportRetry(not recovered and recoveryMessage or (not ok and message)
+                            or ("Tried " .. method .. " and chest recovery; unit panel is still visible."))
+                    end
                 end
                 nextAttempt = os.clock() + CONFIG.General.RetryInterval
             end
@@ -1811,6 +1926,7 @@ do
             local nextAttempt = 0
             local reportRetry = newRetryMonitor("Startup collection and teleport")
             local pendingCharacter, pendingRoot, pendingPosition
+            local teleportFailed = false
             local lastMessage
             local function movedAfterClick()
                 return pendingPosition and player.Character == pendingCharacter
@@ -1823,7 +1939,17 @@ do
                 logInfo("Startup", "TeleportButton changed character position; starting automation.")
                 return true
             end
+            local function recoverTeleportUi()
+                -- Discard the failed click's baseline before moving to the chest.
+                -- Recovery movement must never confirm a TeleportButton click.
+                pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
+                pages.master.status.Text = "TeleportButton unavailable/unresponsive; refreshing the UI through your chest..."
+                footer.Text = pages.master.status.Text
+                local ok, message = pcall(recoverUnitPanelThroughChest, nil, "TeleportButton recovery")
+                if not ok and alive then reportRetry("TeleportButton chest recovery: " .. tostring(message)) end
+            end
             local function attemptTeleport()
+                teleportFailed = false
                 local currentGui = player:FindFirstChildOfClass("PlayerGui")
                 if currentGui then playerGui = currentGui end
                 local mine = currentGui and currentGui:FindFirstChild("MineGui")
@@ -1846,12 +1972,15 @@ do
                 local character = player.Character
                 local root = character and character:FindFirstChild("HumanoidRootPart")
                 assert(root and root:IsA("BasePart") and root:IsDescendantOf(workspace), "Character position is not available yet.")
+                teleportFailed = true
                 assert(teleport, "TeleportButton is not available yet.")
                 local before = root.Position
                 clickButton(teleport)
+                teleportFailed = false
                 checkAlive()
                 if player.Character == character and root.Parent == character then
                     pendingCharacter, pendingRoot, pendingPosition = character, root, before
+                    nextAttempt = os.clock() + CONFIG.General.StartupTeleportClickInterval
                     return movedAfterClick()
                 end
                 pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
@@ -1866,6 +1995,10 @@ do
                 end
                 if movedAfterClick() then return confirmTeleport() end
                 if os.clock() >= nextAttempt then
+                    if pendingPosition then
+                        recoverTeleportUi()
+                        if not alive then return false end
+                    end
                     nextAttempt = os.clock() + CONFIG.General.StartupTeleportClickInterval
                     pages.master.status.Text = "Collecting offline rewards, then teleporting after 0.5 seconds..."
                     footer.Text = pages.master.status.Text
@@ -1876,9 +2009,13 @@ do
                     if ok and result then return confirmTeleport() end
                     local message
                     if ok then
-                        message = "Retrying TeleportButton every second until your position changes."
+                        message = "TeleportButton has not moved your character; retrying with chest UI recovery."
                     else
                         pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
+                        if teleportFailed then
+                            recoverTeleportUi()
+                            if not alive then return false end
+                        end
                         message = "Startup retry: " .. tostring(result)
                     end
                     if message ~= lastMessage then
@@ -1896,7 +2033,6 @@ do
     }
 end
 
-local getMyPlot
 
 do
     local hotkeyActions = {[Enum.KeyCode.One] = minimizedActions.toggleMaster}
@@ -7016,13 +7152,35 @@ actions[1] = function()
     assert(statusLabel.Text:match("^Done:"), "Mining stage ended without confirming a removed node")
 end
 local function teleportButtonTo(destination)
-    local root = rootPart()
-    local before = root.Position
-    pause(UI_TIMING.BeforeClose)
-    click(ui("TeleportButton"))
-    waitFor("Confirming teleport to " .. destination, function()
-        return (rootPart().Position - before).Magnitude > 10
-    end, nil, function() click(ui("TeleportButton")) end)
+    local reportRetry = newRetryMonitor("Tutorial TeleportButton to " .. destination)
+    while true do
+        checkFlow()
+        pause(UI_TIMING.BeforeClose)
+        local root = rootPart()
+        local before = root.Position
+        local clicked, message = pcall(function() click(ui("TeleportButton")) end)
+        checkFlow()
+        local moved = false
+        if clicked then
+            -- Observe this click before choosing recovery; this never limits total retries.
+            local settleUntil = os.clock() + math.max(CONFIG.General.StartupTeleportClickInterval, SETTLE_TIME)
+            repeat
+                checkFlow()
+                if rootPart() == root and (root.Position - before).Magnitude > CONFIG.General.StartupTeleportMinDistance then
+                    moved = true
+                    break
+                end
+                pause(CONFIG.General.WaitPoll)
+            until os.clock() >= settleUntil
+        end
+        if moved then break end
+        reportRetry(clicked and "TeleportButton did not change your character position." or tostring(message))
+        local recovered, recoveryMessage = pcall(recoverUnitPanelThroughChest, checkFlow, "Tutorial TeleportButton recovery")
+        checkFlow()
+        if not recovered then reportRetry("Chest recovery: " .. tostring(recoveryMessage)) end
+        -- The next actual click gets a fresh baseline after chest recovery has finished.
+        pause(CONFIG.General.WaitPoll)
+    end
     pause(UI_TIMING.AfterClose)
 
     local anchor
