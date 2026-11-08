@@ -1374,7 +1374,7 @@ Skip if no displayed unit matches. Stop a unit at the target or when Damage is u
 Check the shared unit-sequence cooldown before refreshing anything. If it is active, keep displayed units and skip. Reset Cooldown clears it; a newly detected zone also resets it. Validate the equipment mode and required count, get the cached zone/Density, check the plot, and start the sequence cooldown.
 
 HOTBAR REFRESH / RANKING
-Clear all nine assignments, open inventory, and select up to nine current-zone Names matches. At Density 2+, require a nonempty animation tag. Skip unreadable Damage values. Rank by highest displayed Damage, prefer tagged entries on ties, then preserve inventory order. Recheck row identity, name, tag, and Damage before each click. Close inventory and read hotbar names/copy counts; unreadable counts are warned and treated as zero.
+Clear all nine assignments, open inventory, and select up to nine current-zone Names matches. At Density 2+, require a nonempty animation tag. Skip unreadable Damage values. Rank by highest displayed Damage, prefer _AnimTag entries only on equal Damage, then preserve inventory order. Plan no more than the available nine hotbar slots, count every initial/retry/restore activation against that budget, and check capacity again before each click. Recheck row identity, name, tag, and Damage before each click. Close inventory and read stable hotbar names/copy counts, including full stack quantities; unreadable counts keep retrying with periodic error logs.
 
 AVAILABILITY CHECK
 Count whitelisted copies across displayed holders plus the refreshed hotbar. Require RequiredUnitCount and at least one matching copy. If the count is insufficient, FinalEquipMode is Best, or Density is 0, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
@@ -1774,6 +1774,65 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
         local mine = playerGui:FindFirstChild("MineGui")
         return mine and mine:FindFirstChild("ChestFrame")
     end
+    local function findChestRecoveryStand(position, maxDistance)
+        -- Include solid/visible chest geometry, but ignore invisible non-solid prompt volumes.
+        local minimum = Vector3.new(math.huge, math.huge, math.huge)
+        local maximum = Vector3.new(-math.huge, -math.huge, -math.huge)
+        local parts = chest:GetDescendants()
+        if chest:IsA("BasePart") then table.insert(parts, chest) end
+        local found = false
+        local function includePart(part)
+            found = true
+            for x = -1, 1, 2 do
+                for y = -1, 1, 2 do
+                    for z = -1, 1, 2 do
+                        local corner = part.CFrame:PointToWorldSpace(Vector3.new(part.Size.X * x * 0.5,
+                            part.Size.Y * y * 0.5, part.Size.Z * z * 0.5))
+                        minimum = Vector3.new(math.min(minimum.X, corner.X), math.min(minimum.Y, corner.Y), math.min(minimum.Z, corner.Z))
+                        maximum = Vector3.new(math.max(maximum.X, corner.X), math.max(maximum.Y, corner.Y), math.max(maximum.Z, corner.Z))
+                    end
+                end
+            end
+        end
+        for _, part in ipairs(parts) do
+            if part:IsA("BasePart") and (part.CanCollide or part.Transparency < 1) then includePart(part) end
+        end
+        if not found then includePart(base) end
+        -- Measure the whole avatar around its root so its body also clears the chest.
+        local bodyFrame, bodySize = character:GetBoundingBox()
+        local clearance = math.max(root.Size.X, root.Size.Z) * 0.5
+        for x = -1, 1, 2 do
+            for y = -1, 1, 2 do
+                for z = -1, 1, 2 do
+                    local corner = bodyFrame:PointToWorldSpace(Vector3.new(bodySize.X * x * 0.5,
+                        bodySize.Y * y * 0.5, bodySize.Z * z * 0.5))
+                    local localCorner = root.CFrame:PointToObjectSpace(corner)
+                    clearance = math.max(clearance, Vector3.new(localCorner.X, 0, localCorner.Z).Magnitude)
+                end
+            end
+        end
+        clearance = clearance + 0.75
+        local height = math.min(CONFIG.Units.TeleportHeight, math.max(0.1, maxDistance * 0.5))
+        local standY = position.Y + height
+        local nearestX = math.clamp(position.X, minimum.X, maximum.X)
+        local nearestZ = math.clamp(position.Z, minimum.Z, maximum.Z)
+        local candidates = {
+            Vector3.new(minimum.X - clearance, standY, nearestZ),
+            Vector3.new(maximum.X + clearance, standY, nearestZ),
+            Vector3.new(nearestX, standY, minimum.Z - clearance),
+            Vector3.new(nearestX, standY, maximum.Z + clearance),
+        }
+        local best, bestDistance
+        for _, candidate in ipairs(candidates) do
+            local distance = (candidate - position).Magnitude
+            if distance <= maxDistance - 0.25 and (not bestDistance or distance < bestDistance) then
+                best, bestDistance = candidate, distance
+            end
+        end
+        if best then return best end
+        return nil, "No position outside the chest and avatar bounds is within prompt range."
+    end
+
     local function triggerChest()
         checkTarget()
         local prompt = waitUntil(function()
@@ -1787,10 +1846,19 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
             end
             return found
         end, nil, recoveryName .. ": waiting for your chest proximity prompt")
-        local parent = prompt.Parent
-        local position = parent:IsA("Attachment") and parent.WorldPosition or base.Position
-        local height = math.min(CONFIG.Units.TeleportHeight, math.max(0.1, prompt.MaxActivationDistance * 0.5))
-        root.CFrame = CFrame.new(position + Vector3.new(0, height, 0), position)
+        local reportStand = newRetryMonitor(recoveryName .. ": finding a safe position beside the chest")
+        local stand, position
+        while not stand do
+            checkTarget()
+            local parent = prompt.Parent
+            position = parent:IsA("Attachment") and parent.WorldPosition or base.Position
+            local problem
+            stand, problem = findChestRecoveryStand(position, prompt.MaxActivationDistance)
+            if not stand then reportStand(problem); pause(CONFIG.General.ScanPoll) end
+        end
+        local facing = Vector3.new(position.X, stand.Y, position.Z)
+        if (facing - stand).Magnitude < 0.001 then facing = stand + Vector3.new(0, 0, -1) end
+        root.CFrame = CFrame.new(stand, facing)
         root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
         pause(CONFIG.Units.TeleportDelay)
         checkTarget()
@@ -4494,6 +4562,14 @@ local function saveAndPrintHotbarSummary(operation)
     return summary
 end
 
+local function occupiedRequiredHotbarSlots(summary)
+    local occupied = 0
+    for _, entry in ipairs(summary) do
+        if entry.name ~= "" then occupied = occupied + 1 end
+    end
+    return occupied
+end
+
 local function clickInventoryItems(densityLevel, zoneId)
     local rule = RequiredUnitsByZone[zoneId]
     local allowed = {}
@@ -4506,6 +4582,7 @@ local function clickInventoryItems(densityLevel, zoneId)
     local clicked, skippedNames, skippedTags, skippedDamage = 0, 0, 0, 0
     local addedRows, alreadySelected = 0, 0
     local previousSelection = {}
+    local selectionClicks, selectionClosed = 0, false
     local candidates = {}
     local scroll = inventoryScroll()
     local rows = {}
@@ -4535,13 +4612,20 @@ local function clickInventoryItems(densityLevel, zoneId)
         end
     end
     table.sort(candidates, higherInventoryPriority)
-    for _, candidate in ipairs(candidates) do
+    local initial = readStableRequiredHotbar("Checking free slots before ranked inventory selection")
+    local selectionBudget = math.max(0, 9 - occupiedRequiredHotbarSlots(initial))
+    local selectionLimit = math.min(#candidates, selectionBudget)
+    -- Never advance to a tenth inventory row, even if delayed hotbar updates show fewer slots.
+    for candidateIndex = 1, selectionLimit do
         checkAlive()
+        if selectionClosed or selectionClicks >= selectionBudget then break end
+        local candidate = candidates[candidateIndex]
         local before = readStableRequiredHotbar("Reading hotbar before selecting " .. candidate.name)
-        local occupied = 0
-        for _, entry in ipairs(before) do if entry.name ~= "" then occupied = occupied + 1 end end
-        if occupied >= 9 then break end
+        if occupiedRequiredHotbarSlots(before) >= 9 then break end
         local beforeCopies = hotbarCopiesOf(before, candidate.name)
+        -- A same-name row can toggle off an existing stack. Do not spend the last
+        -- activation when there would be no allowance left to restore the stronger selection.
+        if beforeCopies > 0 and selectionBudget - selectionClicks < 2 then continue end
         local target = candidate.target
         local match = nil
         for _, row in ipairs(inventoryScroll():GetChildren()) do
@@ -4570,14 +4654,30 @@ local function clickInventoryItems(densityLevel, zoneId)
                 return parseRequiredStackCount(inventoryText(currentContent and currentContent:FindFirstChild("ActualItemCount")))
             end, nil, "Waiting for the inventory stack quantity of " .. name)
             local function selectCandidate()
+                -- Recheck every initial/retry/restore click: stack copies do not consume extra slots.
+                local current = readRequiredHotbarSnapshot()
+                if not current then return false end
+                if occupiedRequiredHotbarSlots(current) >= 9 or selectionClicks >= selectionBudget then
+                    selectionClosed = true
+                    return false
+                end
                 if match.Parent ~= inventoryScroll() then error("Inventory row changed while selecting " .. name, 0) end
                 local currentContent = match:FindFirstChild("Content")
-                if inventoryText(currentContent and currentContent:FindFirstChild("ItemName")) ~= name then
+                local currentName = currentContent and currentContent:FindFirstChild("ItemName")
+                if inventoryText(currentName) ~= name then
                     error("Inventory unit changed while selecting " .. name, 0)
                 end
+                local currentDamage = inventoryDamageKey(inventoryText(currentContent and currentContent:FindFirstChild("Damage")))
+                if taggedInventoryName(currentName) ~= candidate.tagged or not currentDamage
+                    or currentDamage.power ~= candidate.damage.power or currentDamage.digits ~= candidate.damage.digits then
+                    error("Inventory tag/Damage changed while selecting " .. name .. "; rerun to rank it again.", 0)
+                end
+                selectionClicks = selectionClicks + 1
                 clickButton(match)
+                return true
             end
             selectCandidate()
+            if selectionClosed then break end
             clicked = clicked + 1
             pause(CLICK_DELAY)
             local function retryCandidateSelection()
@@ -4591,10 +4691,12 @@ local function clickInventoryItems(densityLevel, zoneId)
                 selectCandidate()
             end
             local selected = readStableRequiredHotbar("Confirming inventory selection of " .. name, function(summary)
+                if selectionClosed then return true end
                 local copies = hotbarCopiesOf(summary, name)
                 if beforeCopies > 0 and copies < beforeCopies then return true end
                 return copies >= math.max(beforeCopies, expectedCopies)
             end, retryCandidateSelection)
+            if selectionClosed then break end
             local afterCopies = hotbarCopiesOf(selected, name)
             if afterCopies < beforeCopies then
                 -- Clicking another row can toggle an already selected stack off. Restore it;
@@ -4602,7 +4704,7 @@ local function clickInventoryItems(densityLevel, zoneId)
                 local restoreSelection = previousSelection[name] or selectCandidate
                 restoreSelection()
                 readStableRequiredHotbar("Restoring the already selected stack of " .. name, function(summary)
-                    return hotbarCopiesOf(summary, name) >= beforeCopies
+                    return selectionClosed or hotbarCopiesOf(summary, name) >= beforeCopies
                 end, restoreSelection)
                 alreadySelected = alreadySelected + 1
             elseif afterCopies == beforeCopies then
@@ -4618,8 +4720,8 @@ local function clickInventoryItems(densityLevel, zoneId)
     for _, entry in ipairs(verified) do
         if allowed[entry.name] then slots, copies = slots + 1, copies + entry.count end
     end
-    logInfo("Required Units", string.format("%s density %d inventory selection: tried %d ranked rows; %d added selections, %d already-selected/redundant rows; verified %d/9 matching hotbar slots containing %d copies including stacks. Skipped %d other names, %d untagged matches, and %d unreadable damage values.",
-        zoneId, densityLevel, clicked, addedRows, alreadySelected, slots, copies, skippedNames, skippedTags, skippedDamage))
+    logInfo("Required Units", string.format("%s density %d inventory selection (highest Damage first, _AnimTag on ties; activations %d/%d including retries): tried %d ranked rows; %d added selections, %d already-selected/redundant rows; verified %d/9 matching hotbar slots containing %d copies including stacks. Skipped %d other names, %d untagged matches, and %d unreadable damage values.",
+        zoneId, densityLevel, selectionClicks, selectionBudget, clicked, addedRows, alreadySelected, slots, copies, skippedNames, skippedTags, skippedDamage))
 end
 
 local function emptyPlacementSlots(plot)
