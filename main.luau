@@ -1543,10 +1543,10 @@ ACTIONS
 STOPS
 Skip if no displayed unit matches. Stop a unit at the target or when Damage is unavailable; stop with an error if ownership, identity, character, required controls, or expected response is lost. This stage does not run Speed/MineSpeed catch-up.]],
         units = [[ENTRY CONDITIONS
-Check the shared unit-sequence cooldown before refreshing anything. If active, keep displayed units and skip. Reset Cooldown clears it; a new zone resets it. Validate the equipment mode, use cached zone/Density, check plot ownership, and start the sequence cooldown.
+Run at Density 0 or higher. Check the shared unit-sequence cooldown before refreshing anything. If active, keep displayed units and skip. Reset Cooldown clears it; a new zone resets it. Validate the equipment mode, use cached zone/Density, check plot ownership, and start the sequence cooldown.
 
 AVAILABILITY CHECK
-Clear occupied hotbar assignments, open inventory, and count current-zone whitelisted copies directly from inventory, including stack quantities. At Density 2+, require a nonempty animation tag; Density 0-1 accepts either. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is 0, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
+Clear occupied hotbar assignments, open inventory, and count current-zone whitelisted copies directly from inventory, including stack quantities. At Density 2+, require a nonempty animation tag; Density 0-1 accepts either. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient or FinalEquipMode is Best, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
 
 REPLACEMENT / PLACEMENT
 Once eligible, require a ready character, close panels, and remove all displayed units with confirmed pickup retries. Clear occupied hotbar assignments again, open inventory, and recheck available matching copies plus units already placed in required pads.
@@ -1556,7 +1556,7 @@ Rank eligible inventory stacks by highest Damage, prefer _AnimTag on equal Damag
 If selection confirmation fails, recheck for delayed success, reacquire the same card, and retry without clearing the selected stack or cycling inventory closed and open. Unreadable quantities, UI waits, pickup, and placement retry without timeouts and report periodic errors. Preserve character, plot, hotbar identity, focus/text-field, and held-input checks.
 
 MUTATION READINESS
-Confirm whitelisted units occupy every required pad and provide that displayed-unit count to later stages. Partial/failed preparation, cooldown skips, and Density 0 keep Mutate Units locked.]],
+Confirm whitelisted units occupy every required pad and provide that displayed-unit count to later stages. Partial/failed preparation and cooldown skips keep Mutate Units locked.]],
         mutation = [[ENTRY CONDITIONS
 Use the cached zone/Density. Skip at Density 2+, when all RequiredMutations tier counts are zero, or when full Required Units preparation/count confirmation did not complete this cycle.
 
@@ -3073,7 +3073,7 @@ local function syncUnitSequenceZone(zoneId)
 end
 local function unitsPreparedThisCycle(zoneId)
     if cycleUnitsPreparedZone ~= zoneId then
-        return false, "Full Required Units preparation did not complete in this cycle (placement skipped / density 0 / cooldown)."
+        return false, "Full Required Units preparation did not complete in this cycle (placement skipped / cooldown)."
     end
     return true
 end
@@ -5224,7 +5224,6 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
         return "Placement skipped: " .. reason .. " Equip Best is handled at cycle end.", false, reason
     end
     if FinalEquipMode == "Best" then return skipPlacement("FinalEquipMode is Best.") end
-    if densityLevel == 0 then return skipPlacement("density level is 0.") end
     if required == 0 then return skipPlacement("RequiredUnitCount is zero; no required pads to fill.") end
     local placed, batches = 0, 0
     local function finish(displayed, detail)
@@ -5349,8 +5348,8 @@ local function runRequiredUnits()
     local inventory = readRequiredInventory(densityLevel, zoneId, "Counting whitelisted inventory copies for RequiredUnitCount")
     closeRequiredInventory()
     local available, availabilityReason = combinedRequiredAvailability(plot, zoneId, inventory.summary)
-    if not available or FinalEquipMode == "Best" or densityLevel == 0 then
-        local reason = availabilityReason or (FinalEquipMode == "Best" and "FinalEquipMode is Best." or "density level is 0.")
+    if not available or FinalEquipMode == "Best" then
+        local reason = availabilityReason or "FinalEquipMode is Best."
         return "Skipped: " .. reason .. " Displayed units kept in place; Mutate Units skipped."
     end
 
