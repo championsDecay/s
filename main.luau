@@ -367,7 +367,7 @@ local CONFIG = {
         InitialTab = "master",
         Width = 620, Height = 620,
         ExpandedScale = 0.9,
-        MinimizedWidth = 342, MinimizedHeight = 216,
+        MinimizedWidth = 342, MinimizedHeight = 246,
         Colors = {
             bg = Color3.fromRGB(22, 25, 34), surface = Color3.fromRGB(31, 35, 47),
             muted = Color3.fromRGB(164, 174, 196), text = Color3.fromRGB(235, 240, 250),
@@ -998,7 +998,7 @@ do
     tutorialButton.Name = "AutoCompleteTutorial"
     tutorialButton.TextSize = 14
     tutorialButton.TextWrapped = true
-    local tutorialStatus = label(minimizedControls, "", UDim2.fromOffset(0, 180), UDim2.new(1, 0, 0, 36), 11)
+    local tutorialStatus = label(minimizedControls, "", UDim2.fromOffset(0, 210), UDim2.new(1, 0, 0, 36), 11)
     tutorialStatus.TextWrapped = true
     pages.tutorial = {name = "Auto complete tutorial", run = tutorialButton, status = tutorialStatus, runText = "Auto complete tutorial"}
     minimizedActions.getHeight = function()
@@ -1115,6 +1115,32 @@ do
 end
 
 do
+    local notificationBox = make("TextLabel", minimizedControls, {
+        Name = "MinimizedNotificationBox", Position = UDim2.fromOffset(0, 180), Size = UDim2.new(1, 0, 0, 26),
+        BackgroundColor3 = colors.idle, BackgroundTransparency = 0, BorderSizePixel = 0, Visible = true,
+        Text = "Notifications", Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = colors.text,
+        TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, ZIndex = 5,
+    })
+    corner(notificationBox)
+    minimizedActions.setNotificationZone = function(zoneId, maxZoneColossus)
+        if minimizedActions.notificationZone ~= zoneId then minimizedActions.maxZoneColossus = false end
+        minimizedActions.notificationZone = zoneId
+        if maxZoneColossus ~= nil then minimizedActions.maxZoneColossus = maxZoneColossus end
+    end
+    minimizedActions.refreshNotification = function()
+        local hasError = scriptErrors.hasAny()
+        local complete = minimizedActions.maxZoneColossus == true
+        local indicatorColor = hasError and Color3.fromRGB(165, 67, 79)
+            or (complete and Color3.fromRGB(38, 148, 84) or colors.idle)
+        local text = hasError and "Notifications: Error"
+            or (complete and "Max zone + Colossus unlocked" or "Notifications")
+        if notificationBox.BackgroundColor3 ~= indicatorColor then notificationBox.BackgroundColor3 = indicatorColor end
+        if notificationBox.Text ~= text then notificationBox.Text = text end
+    end
+    minimizedActions.refreshNotification()
+end
+
+do
     local clickArea = button(minimizedControls, "Idle click area (every 2s)", UDim2.fromOffset(0, 156), UDim2.new(1, 0, 0, 20))
     clickArea.Name, clickArea.TextSize = "MinimizedIdleClickArea", 10
     clickArea.BackgroundColor3, clickArea.TextColor3 = colors.surface, colors.muted
@@ -1123,7 +1149,6 @@ do
     pcall(function() clickArea.InputSink = Enum.InputSink.All end)
     -- Intentionally no action handler: this area only receives the idle clicks.
     local nextClickAt, pressedPoint, releaseAt, pressedSuccessfully
-    local errorColor = Color3.fromRGB(165, 67, 79)
     local reportClickFailure = newRetryMonitor("Clicking the minimized UI idle area")
     local function clickPoint()
         if not alive or not minimized or not preferences.masterEnabled or dragging
@@ -1172,8 +1197,7 @@ do
         releaseClick()
     end}
     connect(game:GetService("RunService").Heartbeat, function()
-        local indicatorColor = scriptErrors.hasAny() and errorColor or colors.surface
-        if clickArea.BackgroundColor3 ~= indicatorColor then clickArea.BackgroundColor3 = indicatorColor end
+        minimizedActions.refreshNotification()
         local now = os.clock()
         if pressedPoint then
             if now >= releaseAt or not alive or not minimized or not preferences.masterEnabled
@@ -1468,7 +1492,7 @@ Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Re
 
 Start each cycle with fresh cycle state. In the first cycle, enabled automatic Workspace cleanup runs once at the start, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
-On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. Its area turns red while a reported retry/stage error is active and returns to its normal color after recovery. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
+On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
 Stop, Master OFF, unload, or the relevant shortcuts cancel active work, restore saved positions where available, and release prompts, keys, and focused panels.
 
@@ -1504,7 +1528,7 @@ No lower-ID fallback is purchased when the highest unlocked tile is unavailable.
 Unavailable file functions, invalid or unreadable count data, a disappearing previously seen file, or unverifiable saves stop purchases. A count saved before a later cancellation or color change remains reserved. Counts represent reserved requests, rather than confirmed inventory purchases.
 
 BETWEEN MASTER CYCLES
-During the cycle delay, open the shop and click visible buy buttons on rows with LayoutOrder 1 then 2 at the configured click interval. These use VirtualInputManager mouse-down/up clicks with a 0.05-second hold, separate from this stage's best-pickaxe limit/count reservation. Close the shop and restore position when the wait ends or is stopped. A shop-wait error uses the rest of the cycle delay. Minimized-area clicks resume afterward; their error-color indicator remains active throughout.]],
+During the cycle delay, open the shop and click visible buy buttons on rows with LayoutOrder 1 then 2 at the configured click interval. These use VirtualInputManager mouse-down/up clicks with a 0.05-second hold, separate from this stage's best-pickaxe limit/count reservation. Close the shop and restore position when the wait ends or is stopped. A shop-wait error uses the rest of the cycle delay. Minimized-area clicks resume afterward; the separate notification box remains active throughout.]],
         upgrades = [[ZONE / DENSITY SCAN
 Open the skill tree. Detect the highest numbered loaded Zone_Z<number> folder after it settles. Cache its zone ID, folder name, and confirmed Density for the cycle. A changed zone clears the unit-sequence cooldown. The maximum configured zone is the highest numeric Z key in RequiredByZone, with no fixed zone-number limit.
 
@@ -1543,10 +1567,10 @@ ACTIONS
 STOPS
 Skip if no displayed unit matches. Stop a unit at the target or when Damage is unavailable; stop with an error if ownership, identity, character, required controls, or expected response is lost. This stage does not run Speed/MineSpeed catch-up.]],
         units = [[ENTRY CONDITIONS
-Run at Density 0 or higher. Check the shared unit-sequence cooldown before refreshing anything. If active, keep displayed units and skip. Reset Cooldown clears it; a new zone resets it. Validate the equipment mode, use cached zone/Density, check plot ownership, and start the sequence cooldown.
+Require Density 1 or higher in Z1-Z11, or Density 0 or higher in Z12 and above. Check the shared unit-sequence cooldown before refreshing anything. If active, keep displayed units and skip. Reset Cooldown clears it; a new zone resets it. Validate the equipment mode, use cached zone/Density, check plot ownership, and start the sequence cooldown.
 
 AVAILABILITY CHECK
-Clear occupied hotbar assignments, open inventory, and count current-zone whitelisted copies directly from inventory, including stack quantities. At Density 2+, require a nonempty animation tag; Density 0-1 accepts either. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient or FinalEquipMode is Best, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
+Clear occupied hotbar assignments, open inventory, and count current-zone whitelisted copies directly from inventory, including stack quantities. At Density 2+, require a nonempty animation tag; Density 0-1 accepts either. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is below the current zone minimum, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
 
 REPLACEMENT / PLACEMENT
 Once eligible, require a ready character, close panels, and remove all displayed units with confirmed pickup retries. Clear occupied hotbar assignments again, open inventory, and recheck available matching copies plus units already placed in required pads.
@@ -1556,7 +1580,7 @@ Rank eligible inventory stacks by highest Damage, prefer _AnimTag on equal Damag
 If selection confirmation fails, recheck for delayed success, reacquire the same card, and retry without clearing the selected stack or cycling inventory closed and open. Unreadable quantities, UI waits, pickup, and placement retry without timeouts and report periodic errors. Preserve character, plot, hotbar identity, focus/text-field, and held-input checks.
 
 MUTATION READINESS
-Confirm whitelisted units occupy every required pad and provide that displayed-unit count to later stages. Partial/failed preparation and cooldown skips keep Mutate Units locked.]],
+Confirm whitelisted units occupy every required pad and provide that displayed-unit count to later stages. Partial/failed preparation, Density below the current zone minimum, and cooldown skips keep Mutate Units locked.]],
         mutation = [[ENTRY CONDITIONS
 Use the cached zone/Density. Skip at Density 2+, when all RequiredMutations tier counts are zero, or when full Required Units preparation/count confirmation did not complete this cycle.
 
@@ -2923,6 +2947,7 @@ local savedZoneScan
 local function useSavedZoneScan()
     if not savedZoneScan then return false end
     cycleZoneId, cycleZoneName, cycleDensityLevel = savedZoneScan.zoneId, savedZoneScan.zoneName, savedZoneScan.densityLevel
+    minimizedActions.setNotificationZone(cycleZoneId)
     refreshMasterRequirements(cycleZoneId, cycleDensityLevel)
     return true
 end
@@ -2933,6 +2958,7 @@ local function getCycleZone()
         local opened = openUpgrades()
         local zone, zoneId = waitForZone()
         cycleZoneId, cycleZoneName = zoneId, zone.Name
+        minimizedActions.setNotificationZone(zoneId)
 
         cycleDensityLevel = assert(readCycleDensity, "Density reader is not initialized.")(zone)
         refreshMasterRequirements(cycleZoneId, cycleDensityLevel)
@@ -3073,7 +3099,7 @@ local function syncUnitSequenceZone(zoneId)
 end
 local function unitsPreparedThisCycle(zoneId)
     if cycleUnitsPreparedZone ~= zoneId then
-        return false, "Full Required Units preparation did not complete in this cycle (placement skipped / cooldown)."
+        return false, "Full Required Units preparation did not complete in this cycle (placement skipped / density below zone minimum / cooldown)."
     end
     return true
 end
@@ -4172,6 +4198,7 @@ end
 local function saveColossusStageToggles(zoneId, pips)
     local atMaxZone = isMaxZone(zoneId)
     local complete = colossusPipsUnlocked(pips)
+    minimizedActions.setNotificationZone(zoneId, atMaxZone and complete)
     local changed = false
     -- Preserve the original Colossus-controlled stages after inserting Unlock slots.
     for _, id in ipairs({"upgrades", "upgradingOldUnit", "units", "mutation", "upgradingUnit"}) do
@@ -4382,6 +4409,7 @@ local function scanCurrentUpgradeZone()
     pause(SETTLE_TIME)
     local zone, zoneId = waitForZone()
     cycleZoneId, cycleZoneName = zoneId, zone.Name
+    minimizedActions.setNotificationZone(zoneId)
     local level
     level, zone = scanDensity(zone)
     syncUnitSequenceZone(zoneId)
@@ -5216,6 +5244,15 @@ local function requiredPlacementState(plot, zoneId)
     return empty, displayed
 end
 
+local function requiredUnitDensityReason(zoneId, densityLevel)
+    local zoneNumber = assert(tonumber(zoneId:match("^Z(%d+)$")), "Invalid cached zone ID.")
+    local minimum = zoneNumber >= 12 and 0 or 1
+    if densityLevel < minimum then
+        return string.format("%s requires Density %d or higher for Required Units; current Density is %d.",
+            zoneId, minimum, densityLevel)
+    end
+end
+
 local function finishEquipping(event, plot, zoneId, densityLevel)
     local required = requiredSlotCount(zoneId)
     local function skipPlacement(reason)
@@ -5224,6 +5261,8 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
         return "Placement skipped: " .. reason .. " Equip Best is handled at cycle end.", false, reason
     end
     if FinalEquipMode == "Best" then return skipPlacement("FinalEquipMode is Best.") end
+    local densityReason = requiredUnitDensityReason(zoneId, densityLevel)
+    if densityReason then return skipPlacement(densityReason) end
     if required == 0 then return skipPlacement("RequiredUnitCount is zero; no required pads to fill.") end
     local placed, batches = 0, 0
     local function finish(displayed, detail)
@@ -5348,8 +5387,9 @@ local function runRequiredUnits()
     local inventory = readRequiredInventory(densityLevel, zoneId, "Counting whitelisted inventory copies for RequiredUnitCount")
     closeRequiredInventory()
     local available, availabilityReason = combinedRequiredAvailability(plot, zoneId, inventory.summary)
-    if not available or FinalEquipMode == "Best" then
-        local reason = availabilityReason or "FinalEquipMode is Best."
+    local densityReason = requiredUnitDensityReason(zoneId, densityLevel)
+    if not available or FinalEquipMode == "Best" or densityReason then
+        local reason = availabilityReason or (FinalEquipMode == "Best" and "FinalEquipMode is Best.") or densityReason
         return "Skipped: " .. reason .. " Displayed units kept in place; Mutate Units skipped."
     end
 
