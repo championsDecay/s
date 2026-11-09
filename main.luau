@@ -857,6 +857,7 @@ local function cleanup(destroyGui)
     if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
+    if modules.unlockSlots then pcall(modules.unlockSlots.cleanup) end
     local unitUpgrade = rawget(modules, "upgradingUnit")
     if unitUpgrade and unitUpgrade.cleanup then pcall(unitUpgrade.cleanup) end
     restorePosition()
@@ -1539,14 +1540,14 @@ Unavailable upgrade buttons stop progress rather than sending requests. Unfinish
         unlockSlots = [[ACTIONS
 1. Run only in Z4. Scan all numbered holder slots in numeric order before Required Units.
 2. Move to each locked slot, unequip tools, and activate its enabled Unlock / Unlock at the hub prompt.
-3. Make up to five attempts per locked slot. Every attempt repeats the teleport, tween to the slot pad, and two-second unlock prompt hold using a different random one-stud horizontal offset. After every failed attempt, send a fresh Equip Best request.
+3. Make up to five attempts per locked slot. Every attempt teleports using a different random one-stud horizontal offset, stays fixed in that position, and holds the unlock prompt for two seconds. Restore movement after the attempt. After every failed attempt, send a fresh Equip Best request.
 4. Confirm the slot now offers Place or Pick Up, then move to the next locked slot with its own five-attempt limit. Stop at the first slot still locked after five attempts. Missing/disabled prompts and replaced controls are reacquired on each attempt.
 
 UNIT-STAGE RECOVERY
 A slot that stays locked after five attempts skips stages 6-8 for the current cycle; Cycle end still runs if enabled. If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units (stage 6) reports a required slot without its unlocked placement prompt in Z4, clear the completed-unlock state and return to this stage with the same five-attempt limit; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
 
 STOPS
-Stop/unload cancels retries and releases held input. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
+Stop/unload cancels retries, releases held input, and restores movement. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
         cycleEnd = [[ACTIONS
 1. Check plot ownership. Request Equip Best, wait the configured delay, and refresh observed mutation progress when a zone is known. A repeated cycle-end request in the same cycle is skipped.
 2. Select the cached current zone if its toggle is ON.
@@ -7974,6 +7975,7 @@ local function resetRun()
     if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
+    if modules.unlockSlots then pcall(modules.unlockSlots.cleanup) end
     local unitUpgrade = rawget(modules, "upgradingUnit")
     if unitUpgrade and unitUpgrade.cleanup then pcall(unitUpgrade.cleanup) end
     restorePosition()
@@ -8009,6 +8011,12 @@ end
 
 do
 local completedUnlockPlot
+local stationaryRoot, stationaryWasAnchored
+local function releaseSlotPosition()
+    local root, wasAnchored = stationaryRoot, stationaryWasAnchored
+    stationaryRoot, stationaryWasAnchored = nil, nil
+    if root then pcall(function() root.Anchored = wasAnchored end) end
+end
 local function slotPrompt(plot, name)
     local holders = plot:FindFirstChild("Holders")
     local holder = holders and holders:FindFirstChild(name)
@@ -8021,6 +8029,7 @@ local function slotReady(prompt)
     return prompt.ActionText == "Place" or action == "pick up"
 end
 modules.unlockSlots = {
+cleanup = releaseSlotPosition,
 isComplete = function()
     return completedUnlockPlot ~= nil and completedUnlockPlot == getMyPlot()
 end,
@@ -8067,9 +8076,7 @@ run = function()
             local upgrade = holder and holder:FindFirstChild("UpgradePart")
             local character = player.Character
             local root = character and character:FindFirstChild("HumanoidRootPart")
-            local pad = holder and holder:FindFirstChild("Pad")
-            assert(root and upgrade and upgrade:IsA("BasePart") and pad and pad:IsA("BasePart"),
-                target .. ": character, UpgradePart or Pad is unavailable.")
+            assert(root and upgrade and upgrade:IsA("BasePart"), target .. ": character or UpgradePart is unavailable.")
             if originalRoot ~= root then originalRoot, originalCFrame = root, root.CFrame end
             local humanoid = character:FindFirstChildOfClass("Humanoid")
             if humanoid then humanoid:UnequipTools() end
@@ -8078,26 +8085,13 @@ run = function()
             lastAngles[name] = angle
             local radians = math.rad(angle)
             local offset = Vector3.new(math.cos(radians), 0, math.sin(radians))
+            stationaryRoot, stationaryWasAnchored = root, root.Anchored
+            root.Anchored = true
             root.CFrame = CFrame.new(upgrade.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, upgrade.Position)
             root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
             pause(CONFIG.Units.TeleportDelay)
             checkPlot(plot)
             assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
-            local tweenStart = root.CFrame
-            local tweenTarget = CFrame.new(pad.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, pad.Position)
-            local tweenStartedAt = os.clock()
-            -- Keep the tween in this worker so Stop/unload cancels movement immediately.
-            while true do
-                checkAlive()
-                checkPlot(plot)
-                assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
-                assert(pad:IsDescendantOf(holder) and holder:IsDescendantOf(plot), target .. ": slot changed during tween.")
-                local alpha = math.min((os.clock() - tweenStartedAt) / 0.25, 1)
-                root.CFrame = tweenStart:Lerp(tweenTarget, alpha)
-                root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-                if alpha >= 1 then break end
-                pause(CONFIG.General.WaitPoll)
-            end
             prompt = slotPrompt(plot, target)
             if slotReady(prompt) then return true end
             assert(prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled
@@ -8117,6 +8111,7 @@ run = function()
             end
         end)
         releaseInputs()
+        releaseSlotPosition()
         checkAlive()
         if ok and unlocked then
             reportRetry(nil, true)
