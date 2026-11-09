@@ -107,9 +107,6 @@ local CONFIG = {
             TeleportDelay = 0.35, KeyHold = 0.05, EquipDelay = 0.3, AfterPromptDelay = 0.6,
         },
     },
-    UpgradingOldUnit = {
-        TargetLevel = 70,
-    },
     Units = {
         SequenceCooldown = 5 * 60,
         UpgradeRequestDelays = {
@@ -1540,7 +1537,7 @@ Use the cached current zone and Density. Run only at Density 0. Z1 has no previo
 ACTIONS
 1. Check plot ownership and scan displayed numbered holders.
 2. Read each unit's displayed name. Include only exact matches in the previous zone's Names list; skip other or unreadable names.
-3. Upgrade Damage only, toward UpgradingOldUnit.TargetLevel. Work on the lowest Damage level first, breaking ties by holder number, in batches of up to five requests.
+3. Upgrade Damage only, toward each unit's own maximum Damage level read from its Stats panel. Work on the lowest Damage level first, breaking ties by holder number, in batches of up to five requests.
 4. Open the correct unit panel and require a green Damage button. Recheck unit identity/ownership and confirm a level or button-color response after each request. Close focus between batches.
 
 STOPS
@@ -1652,7 +1649,7 @@ Master attempts this stage after normal stages, including after a stage error, w
                 table.insert(settings, string.format("Per-node requests: unlimited while available. Request delay: %gs. Row tolerance: %g.",
                     CONFIG.Upgrades.RequestDelay, CONFIG.Upgrades.RowScaleTolerance))
             elseif id == "upgradingOldUnit" then
-                table.insert(settings, string.format("Old-unit Damage target: %d.", CONFIG.UpgradingOldUnit.TargetLevel))
+                table.insert(settings, "Old-unit Damage target: each unit's own maximum from its Stats panel.")
             elseif id == "units" then
                 table.insert(settings, string.format("Equipment mode: %s. Sequence cooldown: %gs. Removal/placement retries: unlimited.",
                     CONFIG.Units.FinalEquipMode, CONFIG.Units.SequenceCooldown))
@@ -6243,8 +6240,21 @@ local function upgradeDisplayedSlots(plot, slots, cap, stageText, heading, optio
         checkSlot(slot)
         if cache then attachCachedUnit(cache, slot) end
         local level = slot.cachedStats and slot.cachedStats.Damage.level or readLevel(slot.holder)
-        slot.startLevel, slot.level = level, level
         slot.damageCap = cap
+        if options.fullDamageMaximum then
+            session = session or createUnitStatSession(plot, 1)
+            session.open(slot)
+            local damage = session.readStat(slot, "Damage")
+            local maximum = damage.maximum
+            if type(maximum) ~= "number" or maximum ~= maximum or maximum < 1
+                or maximum % 1 ~= 0 or maximum == math.huge then
+                error(slot.holder.Name .. ": actual maximum Damage level is missing or invalid; old-unit Damage stopped.", 0)
+            end
+            level, slot.damageCap = damage.level, maximum
+            pause(settings.BeforeExitDelay)
+            closeStatFocus()
+        end
+        slot.startLevel, slot.level = level, level
         if options.halfDamageMaximum then
             local maximum = slot.cachedStats and slot.cachedStats.Damage.maximum
             if type(maximum) ~= "number" or maximum ~= maximum or maximum < 1
@@ -6341,16 +6351,12 @@ modules.upgradingOldUnit = {run = function()
     local allowed = {}
     for _, name in ipairs(previousRule and previousRule.Names or {}) do allowed[name] = true end
     if next(allowed) == nil then return "Skipped: " .. previousZoneId .. " has no configured required unit names." end
-    local cap = CONFIG.UpgradingOldUnit.TargetLevel
-    if type(cap) ~= "number" or cap ~= cap or cap < 1 or cap % 1 ~= 0 or cap == math.huge then
-        error("CONFIG.UpgradingOldUnit.TargetLevel must be a finite positive whole number.", 0)
-    end
     local plot = getMyPlot()
     checkPlot(plot)
     local holders = path(plot, {"Holders"})
     local slots = {}
-    logUnitUpgradeDetail(string.format("Current zone=%s; density=%d; ONLY previous zone %s Names are eligible; old-unit target level=%d.",
-        zoneId, densityLevel, previousZoneId, cap))
+    logUnitUpgradeDetail(string.format("Current zone=%s; density=%d; ONLY previous zone %s Names are eligible; old-unit target is each unit's own maximum Damage level.",
+        zoneId, densityLevel, previousZoneId))
     for _, holder in ipairs(holders:GetChildren()) do
         local number = tonumber(holder.Name:match("^M(%d+)$"))
         if number and number >= 1 and isDisplayed(holder) then
@@ -6366,10 +6372,10 @@ modules.upgradingOldUnit = {run = function()
     end
     table.sort(slots, function(a, b) return a.number < b.number end)
     if #slots == 0 then return "Skipped: no displayed units match " .. previousZoneId .. " required Names." end
-    local damageRequests = upgradeDisplayedSlots(plot, slots, cap, oldStatus,
-        "Upgrading ONLY " .. previousZoneId .. " required units (Damage only)", {scope = "Upgrade Old Units"})
-    return string.format("%s: processed %d displayed units from %s Names only; sent %d Damage requests. Old-unit target level: %d.",
-        zoneId, #slots, previousZoneId, damageRequests, cap)
+    local damageRequests = upgradeDisplayedSlots(plot, slots, nil, oldStatus,
+        "Upgrading ONLY " .. previousZoneId .. " required units (Damage only)", {scope = "Upgrade Old Units", fullDamageMaximum = true})
+    return string.format("%s: processed %d displayed units from %s Names only; sent %d Damage requests. Old-unit target: each unit's own maximum Damage level.",
+        zoneId, #slots, previousZoneId, damageRequests)
 end}
 
 local function upgradeZoneDamage(plot, zoneId, densityLevel, cache)
