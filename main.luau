@@ -7543,7 +7543,10 @@ actions[3] = function()
         local remaining = readFirstHotbarUnit()
         return remaining.name == "" or remaining.name == source.name and remaining.count < source.count
     end
-    assert(not occupied(), "M1 is already occupied; placement stopped to avoid picking it up")
+    if occupied() then
+        flowStatus.Text = "M1 is already occupied; skipping placement"
+        return
+    end
     if visible(ui("SlotFocusFrame")) then
         pause(UI_TIMING.BeforeClose)
         click(ui("SlotFocusFrame", "ExitButton"))
@@ -7562,9 +7565,13 @@ actions[3] = function()
         return os.clock() - stableSince >= 0.2 and current
     end)
     assert(source.name ~= "" and source.count > 0, "Hotbar slot 1 has no unit")
+    local placementRequested = false
     for attempt = 1, 4 do
         if occupied() then
-            assert(attempt > 1, "M1 became occupied before placement")
+            if not placementRequested then
+                flowStatus.Text = "M1 is already occupied; skipping placement"
+                return
+            end
             waitFor("Confirming hotbar 1 supplied the placed unit", function() return consumed(source) end)
             return
         end
@@ -7597,6 +7604,7 @@ actions[3] = function()
             -- Pair Begin/End and release on Stop/error/unload as well.
             flowStatus.Text = "Activating M1 HolderPrompt"
             heldPrompt = currentPrompt
+            placementRequested = true
             currentPrompt:InputHoldBegin()
             pause(math.max(currentPrompt.HoldDuration, 0.05))
             releaseInputs()
@@ -7605,6 +7613,10 @@ actions[3] = function()
             while not occupied() and os.clock() < deadline do pause(0.05) end
         end
         if occupied() then
+            if not placementRequested then
+                flowStatus.Text = "M1 is already occupied; skipping placement"
+                return
+            end
             waitFor("Confirming hotbar 1 supplied the placed unit", function() return consumed(source) end)
             return
         end
