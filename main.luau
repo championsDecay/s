@@ -834,22 +834,26 @@ do
         local character = player.Character
         local root = character and character:FindFirstChild("HumanoidRootPart")
         if root and not root:IsA("BasePart") then root = nil end
-        if flyRoot == root and velocity and velocity.Parent == root
-            and attachment and attachment.Parent == root then return end
-        clearFlight()
-        if not root then return end
-        flyRoot = root
-        attachment = Instance.new("Attachment")
-        attachment.Name = "MasterFlyAttachment"
-        attachment.Parent = root
-        velocity = Instance.new("LinearVelocity")
-        velocity.Name = "MasterFlyVelocity"
+        local valid = flyRoot == root and velocity and velocity.Parent == root
+            and attachment and attachment.Parent == root
+        if not valid then
+            clearFlight()
+            if not root then return end
+            flyRoot = root
+            attachment = Instance.new("Attachment")
+            attachment.Name = "MasterFlyAttachment"
+            attachment.Parent = root
+            velocity = Instance.new("LinearVelocity")
+            velocity.Name = "MasterFlyVelocity"
+        end
+        -- Reassert hover and clear downward velocity before each physics step.
         velocity.Attachment0 = attachment
         velocity.RelativeTo = Enum.ActuatorRelativeTo.World
         velocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
         velocity.VectorVelocity = Vector3.zero
         velocity.ForceLimitsEnabled = false
-        velocity.Parent = root
+        velocity.Enabled = true
+        if velocity.Parent ~= root then velocity.Parent = root end
         root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
     end
     modules.masterFly = {
@@ -857,7 +861,7 @@ do
             stopFlight()
             if not alive or not busy or activeRun ~= "master" or not preferences.masterEnabled then return end
             updateFlight()
-            watcher = game:GetService("RunService").Heartbeat:Connect(updateFlight)
+            watcher = game:GetService("RunService").PreSimulation:Connect(updateFlight)
         end,
         stop = stopFlight,
     }
@@ -1463,7 +1467,7 @@ do
         master = [[MASTER FLOW
 Run enabled stages in the configured order. Each stage button can also run its stage once. Master repeats until stopped; saved Master/stage toggles are restored on load.
 
-Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly stays enabled throughout the active Master run, including stages and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Startup waiting and standalone stages do not enable fly.
+Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Startup waiting and standalone stages do not enable fly.
 
 Start each cycle with fresh cycle state. In the first cycle, enabled automatic Workspace cleanup runs once at the start, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
