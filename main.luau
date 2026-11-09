@@ -120,7 +120,7 @@ local CONFIG = {
         StatUpgrade = {
             MinimumDamageLevel = 11,
             GreenColor = Color3.fromRGB(38, 148, 84),
-            TeleportHeight = 3,
+            TeleportHeight = 4,
             TeleportDelay = 0.05,
             AfterUpgradeClickDelay = 0.05,
             PanelSettleTime = 0.05,
@@ -335,7 +335,7 @@ local CONFIG = {
         },
         ActionTimeout = math.huge,
         TeleportDelay = 0.15,
-        TeleportHeight = 3,
+        TeleportHeight = 4,
         EquipSlotDelay = 0.2,
         PlacementKeyHold = 0.05,
         PlacementDelay = 0.4,
@@ -356,7 +356,7 @@ local CONFIG = {
         Priority = { "None", "Bronze", "Diamond", "Platinum", "Rainbow", "Frozen", "Inferno", "Nightmare", "Unreal" },
 
         TeleportDelay = 0.25,
-        TeleportHeight = 3,
+        TeleportHeight = 4,
         PanelSettleTime = 0.3,
         RollSettleTime = 0.25,
         RapidRollSettleTime = 0.1,
@@ -6740,7 +6740,7 @@ do
                 local radians = math.rad(angle)
                 offset = Vector3.new(math.cos(radians), 0, math.sin(radians))
             end
-            root.CFrame = CFrame.new(base.Position + Vector3.new(0, 3, 0) + offset, base.Position)
+            root.CFrame = CFrame.new(base.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, base.Position)
             root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
             pause(CONFIG.HotbarUpgrade.Placement.TeleportDelay)
         end
@@ -7291,7 +7291,7 @@ local function rootPart()
     assert(root and humanoid and humanoid.Health > 0, "Character is not ready")
     return root
 end
-local function teleport(target)
+local function teleport(target, clearance)
     checkFlow()
     assert(target, "Teleport target is missing")
     local cf, size
@@ -7305,7 +7305,7 @@ local function teleport(target)
     -- Top of the rotated bounds plus clearance for the character's feet.
     local halfHeight = (math.abs(cf.RightVector.Y) * size.X
         + math.abs(cf.UpVector.Y) * size.Y + math.abs(cf.LookVector.Y) * size.Z) / 2
-    local destination = cf.Position + Vector3.new(0, halfHeight + 3.5, 0)
+    local destination = cf.Position + Vector3.new(0, halfHeight + (clearance or 3.5), 0)
     local root = rootPart()
     root.CFrame = CFrame.new(destination) * cf.Rotation
     root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
@@ -7597,7 +7597,7 @@ actions[3] = function()
         local base = holder:FindFirstChild("Pad")
         if not base or not base:IsA("BasePart") then base = holder:FindFirstChild("UpgradePart") end
         assert(base and base:IsA("BasePart"), "M1 placement base is missing")
-        root.CFrame = CFrame.new(base.Position + Vector3.new(0, 3, 0), base.Position)
+        root.CFrame = CFrame.new(base.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0), base.Position)
         root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
         pause(0.35)
         local deadline = os.clock() + ACTION_TIMEOUT
@@ -7788,7 +7788,7 @@ actions[6] = function()
         return path(plot, {"Holders", "M1", "UpgradePart"})
     end)
     validatePlot(plot)
-    teleport(upgrade)
+    teleport(upgrade, CONFIG.Units.StatUpgrade.TeleportHeight + 0.5)
     local detector = upgrade:FindFirstChild("UpgradeClick") or upgrade:FindFirstChildWhichIsA("ClickDetector")
     assert(detector and detector.MaxActivationDistance > 0, "M1 UpgradeClick is unavailable")
     assert((rootPart().Position - upgrade.Position).Magnitude <= detector.MaxActivationDistance,
