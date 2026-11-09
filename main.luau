@@ -813,6 +813,56 @@ local function releaseInputs()
     if mouse then pcall(function() VIM:SendMouseButtonEvent(mouse.X, mouse.Y, 0, false, game, 0) end) end
 end
 
+-- Master hover follows the running Master, including cycle waits and respawns.
+do
+    local flyRoot, attachment, velocity, watcher
+    local function clearFlight()
+        local oldVelocity, oldAttachment = velocity, attachment
+        flyRoot, attachment, velocity = nil, nil, nil
+        if oldVelocity then oldVelocity:Destroy() end
+        if oldAttachment then oldAttachment:Destroy() end
+    end
+    local function stopFlight()
+        if watcher then watcher:Disconnect(); watcher = nil end
+        clearFlight()
+    end
+    local function updateFlight()
+        if not alive or not busy or activeRun ~= "master" or not preferences.masterEnabled then
+            stopFlight()
+            return
+        end
+        local character = player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        if root and not root:IsA("BasePart") then root = nil end
+        if flyRoot == root and velocity and velocity.Parent == root
+            and attachment and attachment.Parent == root then return end
+        clearFlight()
+        if not root then return end
+        flyRoot = root
+        attachment = Instance.new("Attachment")
+        attachment.Name = "MasterFlyAttachment"
+        attachment.Parent = root
+        velocity = Instance.new("LinearVelocity")
+        velocity.Name = "MasterFlyVelocity"
+        velocity.Attachment0 = attachment
+        velocity.RelativeTo = Enum.ActuatorRelativeTo.World
+        velocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+        velocity.VectorVelocity = Vector3.zero
+        velocity.ForceLimitsEnabled = false
+        velocity.Parent = root
+        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+    end
+    modules.masterFly = {
+        start = function()
+            stopFlight()
+            if not alive or not busy or activeRun ~= "master" or not preferences.masterEnabled then return end
+            updateFlight()
+            watcher = game:GetService("RunService").Heartbeat:Connect(updateFlight)
+        end,
+        stop = stopFlight,
+    }
+end
+
 local function restorePosition()
     local root, position = originalRoot, originalCFrame
     originalRoot, originalCFrame = nil, nil
@@ -857,7 +907,7 @@ local function cleanup(destroyGui)
     if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
-    if modules.unlockSlots then pcall(modules.unlockSlots.cleanup) end
+    if modules.masterFly then pcall(modules.masterFly.stop) end
     local unitUpgrade = rawget(modules, "upgradingUnit")
     if unitUpgrade and unitUpgrade.cleanup then pcall(unitUpgrade.cleanup) end
     restorePosition()
@@ -1413,7 +1463,7 @@ do
         master = [[MASTER FLOW
 Run enabled stages in the configured order. Each stage button can also run its stage once. Master repeats until stopped; saved Master/stage toggles are restored on load.
 
-Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run.
+Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly stays enabled throughout the active Master run, including stages and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Startup waiting and standalone stages do not enable fly.
 
 Start each cycle with fresh cycle state. In the first cycle, enabled automatic Workspace cleanup runs once at the start, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
@@ -1540,14 +1590,14 @@ Unavailable upgrade buttons stop progress rather than sending requests. Unfinish
         unlockSlots = [[ACTIONS
 1. Run only in Z4. Scan all numbered holder slots in numeric order before Required Units. Compare trimmed, lowercase ActionText only to the exact values "unlock" and "unlock at the hub"; ignore other text containing "unlock".
 2. If no matching unlock prompts are found, skip this stage and continue stages 6-8 normally. Otherwise move to the lowest matching locked slot, unequip tools, and activate its enabled prompt.
-3. Make up to five attempts per locked slot. Every attempt enables hover and noclip, teleports using a different random one-stud horizontal offset, and holds the unlock prompt for two seconds without drifting. Restore movement and collisions after the attempt. After every failed attempt, send a fresh Equip Best request.
+3. Make up to five attempts per locked slot. Every attempt teleports using a different random one-stud horizontal offset and holds the unlock prompt for two seconds. During Master, fly stays enabled for the whole run. After every failed attempt, send a fresh Equip Best request.
 4. Confirm the slot now offers Place or Pick Up before attempting any higher matching locked slot, with its own five-attempt limit. A previously targeted lower slot not confirmed unlocked blocks higher slots; unrelated prompt text is ignored. Stop at the first matching slot still locked after five attempts. Reacquire prompts and recheck the exact ActionText before teleporting and holding.
 
 UNIT-STAGE RECOVERY
 A slot that stays locked after five attempts skips stages 6-8 for the current cycle; Cycle end still runs if enabled. If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units (stage 6) reports a required slot without its unlocked placement prompt in Z4, clear the completed-unlock state and return to this stage with the same five-attempt limit; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
 
 STOPS
-Stop/unload cancels retries, releases held input, and restores movement and collisions. Character replacement also releases hover and noclip. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
+Stop/unload cancels retries, releases held input, and disables Master fly. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
         cycleEnd = [[ACTIONS
 1. Check plot ownership. Request Equip Best, wait the configured delay, and refresh observed mutation progress when a zone is known. A repeated cycle-end request in the same cycle is skipped.
 2. Select the cached current zone if its toggle is ON.
@@ -7975,7 +8025,7 @@ local function resetRun()
     if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
-    if modules.unlockSlots then pcall(modules.unlockSlots.cleanup) end
+    if modules.masterFly then pcall(modules.masterFly.stop) end
     local unitUpgrade = rawget(modules, "upgradingUnit")
     if unitUpgrade and unitUpgrade.cleanup then pcall(unitUpgrade.cleanup) end
     restorePosition()
@@ -8011,41 +8061,7 @@ end
 
 do
 local completedUnlockPlot
-local stationaryRoot, stationaryWasAnchored
-local stationaryCollisions, stationaryNoclip
-local function releaseSlotPosition()
-    local root, wasAnchored = stationaryRoot, stationaryWasAnchored
-    local collisions, noclip = stationaryCollisions, stationaryNoclip
-    stationaryRoot, stationaryWasAnchored = nil, nil
-    stationaryCollisions, stationaryNoclip = nil, nil
-    if noclip then noclip:Disconnect() end
-    for part, canCollide in pairs(collisions or {}) do
-        pcall(function() part.CanCollide = canCollide end)
-    end
-    if root then pcall(function() root.Anchored = wasAnchored end) end
-end
-local function holdSlotPosition(character, root)
-    releaseSlotPosition()
-    stationaryRoot, stationaryWasAnchored = root, root.Anchored
-    stationaryCollisions = {}
-    local function applyHoverNoclip()
-        if player.Character ~= character or not root:IsDescendantOf(character) then
-            releaseSlotPosition()
-            return
-        end
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                if stationaryCollisions[part] == nil then stationaryCollisions[part] = part.CanCollide end
-                part.CanCollide = false
-            end
-        end
-        -- Hover without drifting while noclip prevents slot geometry from pushing the character.
-        root.Anchored = true
-        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-    end
-    applyHoverNoclip()
-    stationaryNoclip = game:GetService("RunService").Stepped:Connect(applyHoverNoclip)
-end
+
 local function slotPrompt(plot, name)
     local holders = plot:FindFirstChild("Holders")
     local holder = holders and holders:FindFirstChild(name)
@@ -8063,7 +8079,6 @@ local function slotUnlockPrompt(prompt)
     return action == "unlock" or action == "unlock at the hub"
 end
 modules.unlockSlots = {
-cleanup = releaseSlotPosition,
 isComplete = function()
     return completedUnlockPlot ~= nil and completedUnlockPlot == getMyPlot()
 end,
@@ -8132,7 +8147,6 @@ run = function()
             lastAngles[name] = angle
             local radians = math.rad(angle)
             local offset = Vector3.new(math.cos(radians), 0, math.sin(radians))
-            holdSlotPosition(character, root)
             root.CFrame = CFrame.new(upgrade.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, upgrade.Position)
             root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
             pause(CONFIG.Units.TeleportDelay)
@@ -8156,7 +8170,6 @@ run = function()
             end
         end)
         releaseInputs()
-        releaseSlotPosition()
         checkAlive()
         if ok and unlocked then
             reportRetry(nil, true)
@@ -8275,6 +8288,7 @@ startRun = function(id)
         if not actionIsCurrent(token) then return end
         local ok, result = pcall(function()
             if id == "master" then
+                modules.masterFly.start()
                 local cycle = 0
                 while actionIsCurrent(token) do
                     checkAlive()
