@@ -7653,13 +7653,58 @@ actions[4] = actions[1] -- Fresh mining run with the same chosen-node conditions
 actions[5] = function()
     teleportButtonTo("Shops")
     local stand = waitFor("Waiting for SellStand", function() return workspace:FindFirstChild("SellStand") end)
-    -- Approach the prompt part rather than the bounds of a large stand model.
-    local prompt = promptUnder(stand)
-    local anchor = prompt.Parent:IsA("Attachment") and prompt.Parent.Parent or prompt.Parent
-    teleport(anchor)
+    -- Match the sell stage's positioning and direct prompt activation.
+    local lastRetryAngle
+    local function visibleSellFrame()
+        checkFlow()
+        return visible(ui("SellFrame"))
+    end
+    local function openSellStand(isRetry)
+        checkFlow()
+        if visibleSellFrame() then return end
+        stand = workspace:FindFirstChild("SellStand")
+        assert(stand, "SellStand is missing.")
+        local standPart = stand:IsA("BasePart") and stand
+            or (stand.PrimaryPart or stand:FindFirstChildWhichIsA("BasePart"))
+        assert(standPart, "SellStand has no BasePart.")
+        local root = rootPart()
+        local standPos = standPart.Position
+        local facing = standPart.CFrame.LookVector
+        local offset = Vector3.zero
+        if isRetry then
+            local angle = math.random(0, 359)
+            if angle == lastRetryAngle then angle = (angle + 1) % 360 end
+            lastRetryAngle = angle
+            local radians = math.rad(angle)
+            offset = Vector3.new(math.cos(radians), 0, math.sin(radians))
+        end
+        local standSpot = standPos - facing * CONFIG.Sell.StandDistance
+            + Vector3.new(0, CONFIG.Sell.StandHeight, 0) + offset
+        root.CFrame = CFrame.new(standSpot, standPos)
+        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+        local camera = workspace.CurrentCamera
+        if camera then
+            camera.CFrame = CFrame.new(standSpot + Vector3.new(0, CONFIG.Sell.CameraHeight, 0), standPos)
+        end
+        pause(CONFIG.Sell.StandDelay)
+        for _, prompt in ipairs(stand:GetDescendants()) do
+            checkFlow()
+            if visibleSellFrame() then return end
+            if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+                heldPrompt = prompt
+                prompt:InputHoldBegin()
+                pause(math.max(CONFIG.Sell.PromptHold, prompt.HoldDuration))
+                releaseInputs()
+                pause(CONFIG.Sell.PromptDelay)
+            end
+        end
+    end
     pause(UI_TIMING.BeforeOpen)
-    pressE(prompt)
-    waitFor("Confirming sell UI opened", function() return visible(ui("SellFrame")) end)
+    openSellStand(false)
+    flowStatus.Text = "Confirming sell UI opened"
+    waitUntil(visibleSellFrame, CONFIG.Sell.ShopTimeout, "Confirming sell UI opened", function()
+        openSellStand(true)
+    end)
     pause(UI_TIMING.AfterOpen)
     local card = waitFor("Finding Card with LayoutOrder 1", function()
         local scroll = ui("SellFrame", "Content", "Scroll")
