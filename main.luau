@@ -369,7 +369,7 @@ local CONFIG = {
         InitialTab = "master",
         Width = 620, Height = 620,
         ExpandedScale = 0.9,
-        MinimizedWidth = 360, MinimizedHeight = 216,
+        MinimizedWidth = 342, MinimizedHeight = 216,
         Colors = {
             bg = Color3.fromRGB(22, 25, 34), surface = Color3.fromRGB(31, 35, 47),
             muted = Color3.fromRGB(164, 174, 196), text = Color3.fromRGB(235, 240, 250),
@@ -6982,6 +6982,7 @@ end
 do
 local CLICK_RANGE = 5
 local TELEPORT_OFFSET = Vector3.new(0, 2, 2)
+local plots = workspace:WaitForChild("MineWorld"):WaitForChild("Plots")
 local enabled = false
 local running = false
 local closed = false
@@ -7052,7 +7053,8 @@ local function mine()
     local nextClick = 0
 
     local function targetGone()
-
+        -- Check the selected path and instance. Keep a removal event latched
+        -- even if the game restores/replaces the node before the next frame.
         return target and (targetRemoved or nodes:FindFirstChild(targetName) ~= target
             or target.Parent ~= nodes or plot:FindFirstChild("Nodes") ~= nodes
             or not target:IsDescendantOf(workspace))
@@ -7064,7 +7066,6 @@ local function mine()
     end
 
     local ok, reason = pcall(function()
-        local plots = path(workspace, {"MineWorld", "Plots"})
         while enabled and not closed do
             checkAlive()
             if targetGone() then finish(); break end
@@ -7127,19 +7128,17 @@ local function mine()
                         if onScreen then
                             setEnabled(true, "Mining: " .. targetName)
                             ignoreUiUntil = os.clock() + 0.1
-
-                            local detector = target:FindFirstChild("NodeClick", true)
-                            assert(detector and detector:IsA("ClickDetector"), "Selected node has no NodeClick ClickDetector")
-                            checkAlive()
-                            VIM:SendMouseMoveEvent(point.X, point.Y, game)
-                            VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
-                            VIM:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
+                            local input = game:GetService("VirtualInputManager")
+                            local x, y = math.round(point.X), math.round(point.Y)
+                            input:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                            input:SendMouseButtonEvent(x, y, 0, false, game, 0)
                             nextClick = os.clock() + 0.15
                         end
                     end
                 end
             end
 
+            -- Existence is checked every frame, even between mining clicks.
             if targetGone() then finish(); break end
             task.wait()
         end
@@ -7153,22 +7152,23 @@ local function mine()
     end
 end
 
-local ACTION_TIMEOUT = math.huge
-
+local ACTION_TIMEOUT = 12
+-- Seconds around game UI transitions; Stop remains responsive during delays.
 local UI_TIMING = {
     BeforeOpen = 0.25,
     AfterOpen = 0.75,
     BeforeClose = 0.25,
     AfterClose = 0.75,
     AfterTab = 0.35,
-    ChestMinimumHold = 2.0,
-    ChestHoldPadding = 0.5,
+    ChestMinimumHold = 2.0, -- Hold E at least this long when opening the tutorial chest.
+    ChestHoldPadding = 0.5, -- Extra time after the minimum or prompt HoldDuration.
 }
 local flowActive = false
 local pendingConfirmation = false
 local confirmed = false
 local heldKey
 local heldPrompt
+local playerGui = player:WaitForChild("PlayerGui")
 local VIM = game:GetService("VirtualInputManager")
 local UIS = game:GetService("UserInputService")
 
@@ -7187,24 +7187,16 @@ local function pause(seconds)
     repeat checkFlow(); task.wait(0.05) until os.clock() >= deadline
     checkFlow()
 end
-local function waitFor(label, predicate, _timeout, retryAction)
+local function waitFor(label, predicate, timeout)
     flowStatus.Text = label
-    local reportRetry = newRetryMonitor("Tutorial: " .. label)
-    local nextRetry = os.clock() + CONFIG.General.RetryInterval
-    local problem
-    while true do
+    local deadline = os.clock() + (timeout or ACTION_TIMEOUT)
+    repeat
         checkFlow()
         local value = predicate()
-        if value then reportRetry(nil, true); return value end
-        if retryAction and os.clock() >= nextRetry then
-            local ok, response = pcall(retryAction)
-            checkFlow()
-            problem = not ok and response or nil
-            nextRetry = os.clock() + CONFIG.General.RetryInterval
-        end
-        reportRetry(problem)
+        if value then return value end
         task.wait(0.05)
-    end
+    until os.clock() >= deadline
+    error("Timed out: " .. label, 0)
 end
 local function path(root, names)
     local current = root
@@ -7288,7 +7280,7 @@ local function rootPart()
     assert(root and humanoid and humanoid.Health > 0, "Character is not ready")
     return root
 end
-local function teleport(target, chest)
+local function teleport(target)
     checkFlow()
     assert(target, "Teleport target is missing")
     local cf, size
@@ -7299,24 +7291,15 @@ local function teleport(target, chest)
         assert(part, "Teleport target has no BasePart")
         cf, size = part.CFrame, part.Size
     end
-
+    -- Top of the rotated bounds plus clearance for the character's feet.
     local halfHeight = (math.abs(cf.RightVector.Y) * size.X
         + math.abs(cf.UpVector.Y) * size.Y + math.abs(cf.LookVector.Y) * size.Z) / 2
     local destination = cf.Position + Vector3.new(0, halfHeight + 3.5, 0)
     local root = rootPart()
-    if chest then
-        destination = chestTopPosition(chest, target, player.Character, root)
-        cf = CFrame.new(destination)
-    end
     root.CFrame = CFrame.new(destination) * cf.Rotation
     root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
     waitFor("Confirming teleport", function()
         return root == rootPart() and (root.Position - destination).Magnitude < 3
-    end, nil, function()
-        local currentRoot = rootPart()
-        currentRoot.CFrame = CFrame.new(destination) * cf.Rotation
-        currentRoot.AssemblyLinearVelocity, currentRoot.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-        root = currentRoot
     end)
     pause(0.35)
 end
@@ -7351,16 +7334,20 @@ local function pressE(prompt, minimumHold, holdPadding)
     pause(math.max(prompt.HoldDuration, minimumHold or 0) + (holdPadding or 0.15))
     releaseInputs()
 end
-
+-- Unknown UI state never silently passes: allow an explicit in-game confirmation.
+-- This is used only when the game's supplied paths expose no reliable receipt.
 local function confirmResult(label, predicate)
     flowStatus.Text = label
-    if predicate then return waitFor(label, predicate) end
+    local deadline = os.clock() + ACTION_TIMEOUT
+    while predicate and os.clock() < deadline do
+        checkFlow()
+        if predicate() then return end
+        task.wait(0.05)
+    end
     confirmed, pendingConfirmation = false, true
     confirmButton.Visible = true
     flowStatus.Text = label .. " — verify in game, then Confirm & continue (or Stop)."
-    local reportRetry = newRetryMonitor("Tutorial: waiting for manual confirmation: " .. label)
-    while not confirmed do checkFlow(); reportRetry(); task.wait(0.05) end
-    reportRetry(nil, true)
+    while not confirmed do checkFlow(); task.wait(0.05) end
     pendingConfirmation = false
     confirmButton.Visible = false
 end
@@ -7391,7 +7378,8 @@ local function readFirstHotbarUnit()
     return {name = name, count = count}
 end
 local function selectHotbarUnit(slot)
-
+    -- Match main.luau's placeIntoM1: reset equipment, validate the source,
+    -- hold the hotbar number key for 0.05s, then allow 0.3s to equip.
     assert(not UIS:GetFocusedTextBox(), "Leave the text field before selecting hotbar 1")
     checkFlow()
     local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
@@ -7414,7 +7402,8 @@ actions[0] = function()
     assert(type(isfile) == "function" and type(readfile) == "function" and type(writefile) == "function",
         "Stage 0 needs isfile/readfile/writefile to save completion")
     local http = game:GetService("HttpService")
-
+    -- Executor workspace file, separate for each Roblox account. This file is
+    -- created by Stage 0 at runtime, never pre-marked complete by the installer.
     local filename = "MineStageBrowser_Stage0_" .. tostring(player.UserId) .. ".json"
     local settingNames = {"CutsceneMythical", "CutsceneExotic", "CutsceneSummons", "CutsceneMutations", "NightMode"}
     local state = {version = 1, userId = player.UserId, done = false, sent = {}}
@@ -7441,7 +7430,8 @@ actions[0] = function()
         flowStatus.Text = "Stage 0 already completed (saved); skipping"
         return
     end
-
+    -- Verify saving works before sending any toggle. Partial progress is saved
+    -- after each request so Stop/relaunch resumes without reversing prior ones.
     save()
     local event = waitFor("Stage 0: waiting for Remotes.GamestateEvent", function()
         return path(game:GetService("ReplicatedStorage"), {"Remotes", "GamestateEvent"})
@@ -7482,7 +7472,6 @@ local function tutorialChestCloseTarget()
     return found
 end
 local function useTutorialChest(takeLoot)
-    local reportRetry = newRetryMonitor("Tutorial chest recovery")
     local retryPrompt, lootRequested = false, false
     while true do
         checkFlow()
@@ -7492,24 +7481,18 @@ local function useTutorialChest(takeLoot)
                 return path(plot, {"Chest", "ChestBase"})
             end)
             validatePlot(plot)
-            teleport(base, base.Parent)
+            teleport(base)
             if retryPrompt or not visible(ui("ChestFrame")) then
                 pause(UI_TIMING.BeforeOpen)
                 local prompt = promptUnder(plot:FindFirstChild("Chest"))
                 validatePlot(plot)
                 checkFlow()
-
+                -- Simulate the prompt directly, as the normal shop/holder flows do.
                 heldPrompt = prompt
                 prompt:InputHoldBegin()
                 pause(math.max(prompt.HoldDuration, UI_TIMING.ChestMinimumHold) + UI_TIMING.ChestHoldPadding)
                 releaseInputs()
-                waitFor("Confirming tutorial chest opened", function() return visible(ui("ChestFrame")) end, nil, function()
-                    validatePlot(plot)
-                    heldPrompt = prompt
-                    prompt:InputHoldBegin()
-                    pause(math.max(prompt.HoldDuration, UI_TIMING.ChestMinimumHold) + UI_TIMING.ChestHoldPadding)
-                    releaseInputs()
-                end)
+                waitFor("Confirming tutorial chest opened", function() return visible(ui("ChestFrame")) end)
             end
             pause(UI_TIMING.AfterOpen)
             if takeLoot and not lootRequested then
@@ -7517,23 +7500,23 @@ local function useTutorialChest(takeLoot)
                 checkFlow()
                 flowStatus.Text = "Taking tutorial chest contents..."
                 getGameEvent():FireServer("MineTakeChest")
-                lootRequested = true
+                lootRequested = true -- A close error must not repeat a successful collection request.
                 pause(CONFIG.Sell.ChestDelay)
             end
             if visible(ui("ChestFrame")) then
                 local close = waitFor("Waiting for tutorial chest close button", tutorialChestCloseTarget)
                 pause(UI_TIMING.BeforeClose)
                 click(close)
-                waitFor("Confirming tutorial chest closed", function() return not visible(ui("ChestFrame")) end, nil, function() click(close) end)
+                waitFor("Confirming tutorial chest closed", function() return not visible(ui("ChestFrame")) end)
             end
             pause(UI_TIMING.AfterClose)
         end)
-        checkFlow()
-        if ok then reportRetry(nil, true); return end
+        checkFlow() -- Stop/unload must leave the retry loop immediately.
+        if ok then return end
         releaseInputs()
         retryPrompt = true
-        reportRetry(message)
         flowStatus.Text = "Chest error; retrying its proximity prompt: " .. tostring(message)
+        warn("[MineStageBrowser] Tutorial chest retry:", message)
         pause(0.5)
     end
 end
@@ -7563,7 +7546,8 @@ actions[3] = function()
     assert(not occupied(), "M1 is already occupied; placement stopped to avoid picking it up")
     if visible(ui("SlotFocusFrame")) then
         pause(UI_TIMING.BeforeClose)
-        closeUnitPanel("Tutorial: closing unit panel before placement", checkFlow)
+        click(ui("SlotFocusFrame", "ExitButton"))
+        waitFor("Closing unit panel before placement", function() return not visible(ui("SlotFocusFrame")) end)
         pause(UI_TIMING.AfterClose)
     end
     local slot = waitFor("Waiting for hotbar slot 1", function()
@@ -7578,22 +7562,17 @@ actions[3] = function()
         return os.clock() - stableSince >= 0.2 and current
     end)
     assert(source.name ~= "" and source.count > 0, "Hotbar slot 1 has no unit")
-    local attempt = 0
-    local reportRetry = newRetryMonitor("Tutorial M1 placement")
-    while true do
-        checkFlow()
-        attempt = attempt + 1
+    for attempt = 1, 4 do
         if occupied() then
             assert(attempt > 1, "M1 became occupied before placement")
             waitFor("Confirming hotbar 1 supplied the placed unit", function() return consumed(source) end)
-            reportRetry(nil, true)
             return
         end
         local current = readFirstHotbarUnit()
         assert(current.name == source.name and current.count == source.count,
             "Hotbar slot 1 changed before placement")
-
-        flowStatus.Text = "Selecting hotbar 1; placement attempt " .. attempt
+        -- Preserve the requested order on each attempt: select -> teleport -> place.
+        flowStatus.Text = "Selecting hotbar 1; placement attempt " .. attempt .. "/4"
         slot = ui("HotbarFrame", "Content", "Container", "1")
         selectHotbarUnit(slot)
         validatePlot(plot)
@@ -7603,71 +7582,52 @@ actions[3] = function()
         root.CFrame = CFrame.new(base.Position + Vector3.new(0, 3, 0), base.Position)
         root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
         pause(0.35)
-        waitFor("Waiting for tutorial M1 placement prompt", function()
-            return occupied() or prompt().Enabled
-        end, nil, function() selectHotbarUnit(slot) end)
+        local deadline = os.clock() + ACTION_TIMEOUT
         local currentPrompt = prompt()
+        while not occupied() and not currentPrompt.Enabled and os.clock() < deadline do
+            pause(0.05)
+            currentPrompt = prompt()
+        end
         if not occupied() and currentPrompt.Enabled then
             current = readFirstHotbarUnit()
             assert(current.name == source.name and current.count == source.count,
                 "Hotbar slot 1 changed while equipping")
             assert(not action():match("^unlock") and not action():match("^locked"), "M1 is locked")
-
+            -- main.luau activates HolderPrompt directly instead of sending E.
+            -- Pair Begin/End and release on Stop/error/unload as well.
             flowStatus.Text = "Activating M1 HolderPrompt"
             heldPrompt = currentPrompt
             currentPrompt:InputHoldBegin()
             pause(math.max(currentPrompt.HoldDuration, 0.05))
             releaseInputs()
             pause(0.6)
+            deadline = os.clock() + ACTION_TIMEOUT
+            while not occupied() and os.clock() < deadline do pause(0.05) end
         end
         if occupied() then
             waitFor("Confirming hotbar 1 supplied the placed unit", function() return consumed(source) end)
-            reportRetry(nil, true)
             return
         end
-        reportRetry("HolderPrompt.ActionText=" .. prompt().ActionText)
-        pause(0.35)
+        if attempt < 4 then pause(0.35) end
     end
+    error("M1 placement failed after 4 attempts; HolderPrompt.ActionText=" .. prompt().ActionText, 0)
 end
 actions[1] = function()
     setEnabled(true)
-    mine()
+    mine() -- Stage 1 stops only when its exact target is removed/replaced.
     checkFlow()
     assert(statusLabel.Text:match("^Done:"), "Mining stage ended without confirming a removed node")
 end
 local function teleportButtonTo(destination)
-    local reportRetry = newRetryMonitor("Tutorial TeleportButton to " .. destination)
-    while true do
-        checkFlow()
-        pause(UI_TIMING.BeforeClose)
-        local root = rootPart()
-        local before = root.Position
-        local clicked, message = pcall(function() click(ui("TeleportButton")) end)
-        checkFlow()
-        local moved = false
-        if clicked then
-            -- Observe this click before choosing recovery; this never limits total retries.
-            local settleUntil = os.clock() + math.max(CONFIG.General.StartupTeleportClickInterval, SETTLE_TIME)
-            repeat
-                checkFlow()
-                if rootPart() == root and (root.Position - before).Magnitude > CONFIG.General.StartupTeleportMinDistance then
-                    moved = true
-                    break
-                end
-                pause(CONFIG.General.WaitPoll)
-            until os.clock() >= settleUntil
-        end
-        if moved then break end
-        reportRetry(clicked and "TeleportButton did not change your character position." or tostring(message))
-        local recovered, recoveryMessage = pcall(recoverUnitPanelThroughChest, checkFlow, "Tutorial TeleportButton recovery")
-        checkFlow()
-        if not recovered then reportRetry("Chest recovery: " .. tostring(recoveryMessage)) end
-        -- The next actual click gets a fresh baseline after chest recovery has finished.
-        pause(CONFIG.General.WaitPoll)
-    end
-    reportRetry(nil, true)
+    local root = rootPart()
+    local before = root.Position
+    pause(UI_TIMING.BeforeClose)
+    click(ui("TeleportButton"))
+    waitFor("Confirming teleport to " .. destination, function()
+        return (rootPart().Position - before).Magnitude > 10
+    end)
     pause(UI_TIMING.AfterClose)
-
+    -- Position checks distinguish the requested destination from any movement.
     local anchor
     if destination == "Base" then anchor = path(ownedPlot(), {"Chest", "ChestBase"})
     else anchor = workspace:FindFirstChild("SellStand") end
@@ -7675,17 +7635,17 @@ local function teleportButtonTo(destination)
     assert(target and (rootPart().Position - target.Position).Magnitude < 250,
         "TeleportButton did not reach " .. destination .. "; check starting location")
 end
-actions[4] = actions[1]
+actions[4] = actions[1] -- Fresh mining run with the same chosen-node conditions.
 actions[5] = function()
     teleportButtonTo("Shops")
     local stand = waitFor("Waiting for SellStand", function() return workspace:FindFirstChild("SellStand") end)
-
+    -- Approach the prompt part rather than the bounds of a large stand model.
     local prompt = promptUnder(stand)
     local anchor = prompt.Parent:IsA("Attachment") and prompt.Parent.Parent or prompt.Parent
     teleport(anchor)
     pause(UI_TIMING.BeforeOpen)
     pressE(prompt)
-    waitFor("Confirming sell UI opened", function() return visible(ui("SellFrame")) end, nil, function() pressE(prompt) end)
+    waitFor("Confirming sell UI opened", function() return visible(ui("SellFrame")) end)
     pause(UI_TIMING.AfterOpen)
     local card = waitFor("Finding Card with LayoutOrder 1", function()
         local scroll = ui("SellFrame", "Content", "Scroll")
@@ -7698,7 +7658,9 @@ actions[5] = function()
         end
         return found
     end)
-
+    -- The game does not guarantee a Selected attribute/checkmark on its Cards.
+    -- Match main.luau's selection settle, then click Sell once. Confirm the
+    -- actual sale below rather than blocking on a guessed selection marker.
     flowStatus.Text = "Selecting sell Card with LayoutOrder 1"
     click(card)
     pause(0.6)
@@ -7733,12 +7695,12 @@ actions[6] = function()
     pause(UI_TIMING.BeforeOpen)
     checkFlow()
     fireclickdetector(detector)
-    waitFor("Confirming unit UI opened", function() return visible(ui("SlotFocusFrame")) end, nil, function() fireclickdetector(detector) end)
+    waitFor("Confirming unit UI opened", function() return visible(ui("SlotFocusFrame")) end)
     pause(UI_TIMING.AfterOpen)
     click(ui("SlotFocusFrame", "Tabs", "StatsTab"))
     waitFor("Confirming Stats opened", function()
         return visible(ui("SlotFocusFrame", "BottomPanels", "StatsPanel"))
-    end, nil, function() click(ui("SlotFocusFrame", "Tabs", "StatsTab")) end)
+    end)
     pause(UI_TIMING.AfterTab)
     local function level()
         local label = ui("SlotFocusFrame", "BottomPanels", "StatsPanel", "Scroll", "Damage", "LevelTitle")
@@ -7747,9 +7709,10 @@ actions[6] = function()
     local before = level()
     assert(before, "Cannot read Damage.LevelTitle; no upgrade sent")
     click(ui("SlotFocusFrame", "BottomPanels", "StatsPanel", "Scroll", "Damage", "UpgradeButton"))
-    waitFor("Confirming Damage level increased", function() return level() and level() > before end, nil, function() click(ui("SlotFocusFrame", "BottomPanels", "StatsPanel", "Scroll", "Damage", "UpgradeButton")) end)
+    waitFor("Confirming Damage level increased", function() return level() and level() > before end)
     pause(UI_TIMING.BeforeClose)
-    closeUnitPanel("Tutorial: closing unit panel after upgrades", checkFlow)
+    click(ui("SlotFocusFrame", "ExitButton"))
+    waitFor("Confirming unit UI closed", function() return not visible(ui("SlotFocusFrame")) end)
     pause(UI_TIMING.AfterClose)
 end
 actions[7] = function()
@@ -7757,7 +7720,8 @@ actions[7] = function()
         return ui("SkillTreeFullFrame", "Tree", "Canvas", "Zone_Z1", "Node_Deposits1")
     end
     local function readPips()
-
+        -- Reacquire the exact node on every read because a purchase can rebuild
+        -- the tree. Never use another node's Pips as purchase confirmation.
         local label = path(depositNode(), {"Content", "Pips"})
         if not label then return nil end
         local text = label.Text:gsub("<[^>]*>", "")
@@ -7771,16 +7735,16 @@ actions[7] = function()
     local function exitSkillTree()
         pause(UI_TIMING.BeforeClose)
         click(ui("SkillTreeFullFrame", "Footer", "Close"))
-        waitFor("Confirming skill tree closed", function() return not visible(ui("SkillTreeFullFrame")) end, nil, function() click(ui("SkillTreeFullFrame", "Footer", "Close")) end)
+        waitFor("Confirming skill tree closed", function() return not visible(ui("SkillTreeFullFrame")) end)
         pause(UI_TIMING.AfterClose)
     end
     local function refreshUpgradesThroughChest()
         useTutorialChest(false)
     end
     local needsChestRefresh = false
-
+    -- Retain the first request's receipt across UI reloads. Recovery must not
+    -- submit additional purchases while waiting for the same Pips increase.
     local pendingPurchase
-    local reportRetry = newRetryMonitor("Tutorial Stage 7 recovery")
     while true do
         checkFlow()
         local ok, result = pcall(function()
@@ -7797,7 +7761,7 @@ actions[7] = function()
                 end
                 pause(UI_TIMING.BeforeOpen)
                 click(upgrades)
-                waitFor("Confirming skill tree opened", function() return visible(ui("SkillTreeFullFrame")) end, nil, function() click(ui("LeftBar", "Content", "Container", "UpgradesButton")) end)
+                waitFor("Confirming skill tree opened", function() return visible(ui("SkillTreeFullFrame")) end)
                 pause(UI_TIMING.AfterOpen)
             end
             local before = waitFor("Reading Z1 Node_Deposits1.Content.Pips", readPips)
@@ -7807,7 +7771,7 @@ actions[7] = function()
                 return true
             end
             if not pendingPurchase then
-
+                -- Same request and arguments as main.luau.
                 local event = waitFor("Waiting for Remotes.GamestateEvent", function()
                     return path(game:GetService("ReplicatedStorage"), {"Remotes", "GamestateEvent"})
                 end)
@@ -7823,22 +7787,17 @@ actions[7] = function()
                 .. pendingPurchase.current .. "/" .. pendingPurchase.maximum, function()
                 local after = readPips()
                 return after and after.maximum == pendingPurchase.maximum and after.current > pendingPurchase.current
-            end, nil, function()
-                local current = readPips()
-                if current and current.maximum == pendingPurchase.maximum and current.current == pendingPurchase.current then
-                    getGameEvent():FireServer("MineBuySkill", "Z1", "NodeCount", "Deposits1")
-                end
             end)
             exitSkillTree()
             return true
         end)
         checkFlow()
-        if ok and result then reportRetry(nil, true); return end
-        reportRetry(not ok and result or "Waiting for Stage 7 to complete.")
+        if ok and result then return end
         if not ok then
             releaseInputs()
             needsChestRefresh = true
             flowStatus.Text = "Stage 7 will retry: " .. tostring(result)
+            warn("[MineStageBrowser] Stage 7 recovery:", result)
         end
         pause(0.5)
     end
