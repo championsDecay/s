@@ -7633,21 +7633,55 @@ actions[1] = function()
     assert(statusLabel.Text:match("^Done:"), "Mining stage ended without confirming a removed node")
 end
 local function teleportButtonTo(destination)
-    local root = rootPart()
-    local before = root.Position
-    pause(UI_TIMING.BeforeClose)
-    click(ui("TeleportButton"))
-    waitFor("Confirming teleport to " .. destination, function()
-        return (rootPart().Position - before).Magnitude > 10
-    end)
-    pause(UI_TIMING.AfterClose)
-    -- Position checks distinguish the requested destination from any movement.
-    local anchor
-    if destination == "Base" then anchor = path(ownedPlot(), {"Chest", "ChestBase"})
-    else anchor = workspace:FindFirstChild("SellStand") end
-    local target = anchor and getTargetPart(anchor)
-    assert(target and (rootPart().Position - target.Position).Magnitude < 250,
-        "TeleportButton did not reach " .. destination .. "; check starting location")
+    local reportRetry = newRetryMonitor("Tutorial TeleportButton to " .. destination)
+    while true do
+        checkFlow()
+        local ok, moved = pcall(function()
+            pause(UI_TIMING.BeforeClose)
+            local mine = playerGui:FindFirstChild("MineGui")
+            local button = mine and mine:FindFirstChild("TeleportButton")
+            assert(button, "TeleportButton is not available yet.")
+            local character, root = player.Character, rootPart()
+            -- Match startup: only this click's movement of the same character counts.
+            local before = root.Position
+            checkFlow()
+            ignoreUiUntil = os.clock() + 0.2
+            clickButton(button)
+            local deadline = os.clock() + CONFIG.General.StartupTeleportClickInterval
+            flowStatus.Text = "Confirming teleport to " .. destination
+            while true do
+                checkFlow()
+                if player.Character ~= character or root ~= rootPart()
+                    or root.Parent ~= character or not root:IsDescendantOf(workspace) then return false end
+                if (root.Position - before).Magnitude > CONFIG.General.StartupTeleportMinDistance then
+                    return true
+                end
+                if os.clock() >= deadline then return false end
+                pause(CONFIG.General.WaitPoll)
+            end
+        end)
+        checkFlow() -- Stop/unload must escape the retry loop, including after recovery.
+        if ok and moved then
+            pause(CONFIG.Sell.TeleportDelay)
+            -- Keep destination validation separate from chest recovery movement.
+            local anchor
+            if destination == "Base" then anchor = path(ownedPlot(), {"Chest", "ChestBase"})
+            else anchor = workspace:FindFirstChild("SellStand") end
+            local target = anchor and getTargetPart(anchor)
+            assert(target and (rootPart().Position - target.Position).Magnitude < 250,
+                "TeleportButton did not reach " .. destination .. "; check starting location")
+            reportRetry(nil, true)
+            return
+        end
+        reportRetry(not ok and moved or "TeleportButton has not moved your character.")
+        flowStatus.Text = "TeleportButton unavailable/unresponsive; refreshing the UI through your chest..."
+        -- The failed baseline is out of scope before recovery moves the character.
+        -- Shared startup recovery opens/closes the chest and restores the starting position.
+        local recovered, message = pcall(recoverUnitPanelThroughChest, checkFlow, "Tutorial TeleportButton recovery")
+        checkFlow()
+        if not recovered then reportRetry(message) end
+        pause(CONFIG.General.RetryInterval)
+    end
 end
 actions[4] = actions[1] -- Fresh mining run with the same chosen-node conditions.
 actions[5] = function()
