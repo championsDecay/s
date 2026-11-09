@@ -1538,16 +1538,16 @@ Cache identities and initial Damage/Speed/Mining levels for this run. Refresh Sp
 STOPS
 Unavailable upgrade buttons stop progress rather than sending requests. Unfinished stat catch-up pauses further Damage. Identity, plot, character, display, focus-target, unreadable-level, or invalid-response failures stop the stage. Close the focused unit panel on exit.]],
         unlockSlots = [[ACTIONS
-1. Run only in Z4. Scan all numbered holder slots in numeric order before Required Units.
-2. Move to each locked slot, unequip tools, and activate its enabled Unlock / Unlock at the hub prompt.
-3. Make up to five attempts per locked slot. Every attempt teleports using a different random one-stud horizontal offset, stays fixed in that position, and holds the unlock prompt for two seconds. Restore movement after the attempt. After every failed attempt, send a fresh Equip Best request.
-4. Confirm the slot now offers Place or Pick Up, then move to the next locked slot with its own five-attempt limit. Stop at the first slot still locked after five attempts. Missing/disabled prompts and replaced controls are reacquired on each attempt.
+1. Run only in Z4. Scan all numbered holder slots in numeric order before Required Units. Compare trimmed, lowercase ActionText only to the exact values "unlock" and "unlock at the hub"; ignore other text containing "unlock".
+2. If no matching unlock prompts are found, skip this stage and continue stages 6-8 normally. Otherwise move to the lowest matching locked slot, unequip tools, and activate its enabled prompt.
+3. Make up to five attempts per locked slot. Every attempt enables hover and noclip, teleports using a different random one-stud horizontal offset, and holds the unlock prompt for two seconds without drifting. Restore movement and collisions after the attempt. After every failed attempt, send a fresh Equip Best request.
+4. Confirm the slot now offers Place or Pick Up before attempting any higher matching locked slot, with its own five-attempt limit. A previously targeted lower slot not confirmed unlocked blocks higher slots; unrelated prompt text is ignored. Stop at the first matching slot still locked after five attempts. Reacquire prompts and recheck the exact ActionText before teleporting and holding.
 
 UNIT-STAGE RECOVERY
 A slot that stays locked after five attempts skips stages 6-8 for the current cycle; Cycle end still runs if enabled. If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units (stage 6) reports a required slot without its unlocked placement prompt in Z4, clear the completed-unlock state and return to this stage with the same five-attempt limit; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
 
 STOPS
-Stop/unload cancels retries, releases held input, and restores movement. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
+Stop/unload cancels retries, releases held input, and restores movement and collisions. Character replacement also releases hover and noclip. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
         cycleEnd = [[ACTIONS
 1. Check plot ownership. Request Equip Best, wait the configured delay, and refresh observed mutation progress when a zone is known. A repeated cycle-end request in the same cycle is skipped.
 2. Select the cached current zone if its toggle is ON.
@@ -8012,10 +8012,39 @@ end
 do
 local completedUnlockPlot
 local stationaryRoot, stationaryWasAnchored
+local stationaryCollisions, stationaryNoclip
 local function releaseSlotPosition()
     local root, wasAnchored = stationaryRoot, stationaryWasAnchored
+    local collisions, noclip = stationaryCollisions, stationaryNoclip
     stationaryRoot, stationaryWasAnchored = nil, nil
+    stationaryCollisions, stationaryNoclip = nil, nil
+    if noclip then noclip:Disconnect() end
+    for part, canCollide in pairs(collisions or {}) do
+        pcall(function() part.CanCollide = canCollide end)
+    end
     if root then pcall(function() root.Anchored = wasAnchored end) end
+end
+local function holdSlotPosition(character, root)
+    releaseSlotPosition()
+    stationaryRoot, stationaryWasAnchored = root, root.Anchored
+    stationaryCollisions = {}
+    local function applyHoverNoclip()
+        if player.Character ~= character or not root:IsDescendantOf(character) then
+            releaseSlotPosition()
+            return
+        end
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if stationaryCollisions[part] == nil then stationaryCollisions[part] = part.CanCollide end
+                part.CanCollide = false
+            end
+        end
+        -- Hover without drifting while noclip prevents slot geometry from pushing the character.
+        root.Anchored = true
+        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+    end
+    applyHoverNoclip()
+    stationaryNoclip = game:GetService("RunService").Stepped:Connect(applyHoverNoclip)
 end
 local function slotPrompt(plot, name)
     local holders = plot:FindFirstChild("Holders")
@@ -8026,7 +8055,12 @@ end
 local function slotReady(prompt)
     if not prompt or not prompt:IsA("ProximityPrompt") then return false end
     local action = prompt.ActionText:match("^%s*(.-)%s*$"):lower()
-    return prompt.ActionText == "Place" or action == "pick up"
+    return action == "place" or action == "pick up"
+end
+local function slotUnlockPrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    local action = prompt.ActionText:match("^%s*(.-)%s*$"):lower()
+    return action == "unlock" or action == "unlock at the hub"
 end
 modules.unlockSlots = {
 cleanup = releaseSlotPosition,
@@ -8041,6 +8075,7 @@ run = function()
     if completedUnlockPlot == plot then return "Skipped: all holder slots are already unlocked for this plot." end
     local reportRetry = newRetryMonitor("Unlocking all Z4 holder slots")
     local attempts, lastAngles = {}, {}
+    local pendingTarget, pendingNumber
     local function stopAtSlot(name)
         local reason = name .. ": still locked after five unlock attempts."
         skipCycleUnitStages(reason)
@@ -8056,23 +8091,35 @@ run = function()
             if number and number >= 1 then table.insert(slots, {name = holder.Name, number = number}) end
         end
         table.sort(slots, function(a, b) return a.number < b.number end)
-        local target
+        local target, targetNumber
+        local allReady = #slots > 0
         for _, slot in ipairs(slots) do
-            if not slotReady(slotPrompt(plot, slot.name)) then target = slot.name; break end
+            local prompt = slotPrompt(plot, slot.name)
+            if not slotReady(prompt) then allReady = false end
+            if not target and slotUnlockPrompt(prompt) then target, targetNumber = slot.name, slot.number end
         end
-        if #slots > 0 and not target then
-            completedUnlockPlot = plot
+        if not target then
             reportRetry(nil, true)
-            return "Z4: all " .. #slots .. " holder slots are unlocked."
+            if allReady then
+                completedUnlockPlot = plot
+                return "Z4: all " .. #slots .. " holder slots are unlocked."
+            end
+            return "Skipped: no Unlock / Unlock at the hub prompts found. Stages 6-8 continue normally."
         end
-        local name = target or "Holders"
+        if pendingNumber and pendingNumber < targetNumber and not slotReady(slotPrompt(plot, pendingTarget)) then
+            local reason = pendingTarget .. ": previously locked lower slot is not confirmed unlocked."
+            skipCycleUnitStages(reason)
+            return "Skipped: " .. reason .. " Higher slots and stages 6-8 skipped this cycle."
+        end
+        pendingTarget, pendingNumber = target, targetNumber
+        local name = target
         if (attempts[name] or 0) >= 5 then return stopAtSlot(name) end
         attempts[name] = (attempts[name] or 0) + 1
         pages.unlockSlots.status.Text = "Unlocking " .. name .. "; attempt " .. attempts[name] .. "/5..."
         local ok, unlocked = pcall(function()
-            assert(target, "Waiting for numbered holder slots.")
             local prompt, holder = slotPrompt(plot, target)
             if slotReady(prompt) then return true end
+            assert(slotUnlockPrompt(prompt), target .. ": no matching unlock prompt.")
             local upgrade = holder and holder:FindFirstChild("UpgradePart")
             local character = player.Character
             local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -8085,8 +8132,7 @@ run = function()
             lastAngles[name] = angle
             local radians = math.rad(angle)
             local offset = Vector3.new(math.cos(radians), 0, math.sin(radians))
-            stationaryRoot, stationaryWasAnchored = root, root.Anchored
-            root.Anchored = true
+            holdSlotPosition(character, root)
             root.CFrame = CFrame.new(upgrade.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, upgrade.Position)
             root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
             pause(CONFIG.Units.TeleportDelay)
@@ -8094,8 +8140,7 @@ run = function()
             assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
             prompt = slotPrompt(plot, target)
             if slotReady(prompt) then return true end
-            assert(prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled
-                and (prompt.ActionText == "Unlock" or prompt.ActionText == "Unlock at the hub"),
+            assert(slotUnlockPrompt(prompt) and prompt.Enabled,
                 target .. ": waiting for its enabled unlock prompt.")
             heldPrompt = prompt
             prompt:InputHoldBegin()
@@ -8126,10 +8171,8 @@ run = function()
             end)
             checkAlive()
             if not equipped then reportRetry(message) end
-            if attempts[name] >= 5 and not (target and slotReady(slotPrompt(plot, target))) then
-                return stopAtSlot(name)
-            end
-            pause(CONFIG.General.RetryInterval)
+            -- Rescan before the attempt limit so no matching prompts allows normal continuation.
+            if attempts[name] < 5 then pause(CONFIG.General.RetryInterval) end
         end
     end
 end}
