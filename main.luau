@@ -887,6 +887,7 @@ local function cleanup(destroyGui)
     if not alive then return end
     logging.flush()
     if modules.idleClick then modules.idleClick.stop() end
+    if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current, minimizedActions.rollToken, minimizedActions.openToken = nil, nil, nil
     alive, busy, dragging = false, false, false
     if modules.plotCleanup then modules.plotCleanup.stop() end
@@ -1506,7 +1507,7 @@ Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+
 HOTBAR UPGRADES
 Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Place each selected copy, check its identity, upgrade Damage toward the configured target and Speed/Mining to their available maxima, then pick it up before the next copy. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
         sell = [[ACTIONS
-1. Startup clicks OfflineFrame.Content.CollectButton when the offline popup is visible, waits 0.5 seconds, then clicks TeleportButton. Each click is observed for up to one second; attempts continue until the same character moves more than 10 studs after a teleport click. A hidden or absent offline popup does not block retries. A missing/hidden TeleportButton or a click without confirmed movement triggers a chest prompt/open-close recovery before retrying; chest recovery movement never confirms a teleport.
+1. Startup clicks OfflineFrame.Content.CollectButton when the offline popup is visible, waits 0.5 seconds, then clicks TeleportButton. Each click is observed for up to one second; attempts continue until the same character moves more than 10 studs after a teleport click. A hidden or absent offline popup does not block retries. A missing/hidden TeleportButton or a click without confirmed movement triggers chest recovery. Hover during recovery and alternate chest prompt attempts with fresh TeleportButton attempts. Each chest attempt uses a different one-stud horizontal offset above the chest, within prompt range. Missing prompts or unsafe positions do not block the next button attempt. Observe button movement before any further chest repositioning; chest movement never confirms a teleport. A confirmed button teleport exits recovery without restoring the old position. Release recovery hover on exit, Stop, unload, or character changes.
 2. Teleport to your plot, wait, and collect the plot chest.
 3. Teleport to the Hub. Move in front of the sell stand, face the camera toward it, and activate its prompts.
 4. Hold the enabled sell prompt for its required duration, then wait for the game to open the sell window with visible ancestors. Each failed window retry returns the current character to a different random point exactly one horizontal stud from the usual stand position, stops residual movement, faces the stand, and activates its prompt again. Repeat until the window appears or the run is stopped.
@@ -2011,7 +2012,7 @@ local function chestTopPosition(chest, base, character, root, position, maxDista
     return stand
 end
 
-local function recoverUnitPanelThroughChest(checkCurrent, operation)
+local function recoverUnitPanelThroughChest(checkCurrent, operation, retryTeleport)
     local recoveryName = operation or "ExitButton recovery"
     local function check()
         checkAlive()
@@ -2037,13 +2038,60 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
             error("Plot/chest ownership changed during " .. recoveryName .. ".", 0)
         end
     end
+    local hoverAttachment, hoverVelocity, hoverWatcher
+    local recoveryToken = runScope.threads[coroutine.running()]
+    local teleported, recoveryTurn, offsetIndex = false, 0, 0
+    local offsets = retryTeleport and {
+        Vector3.new(1, 0, 0), Vector3.new(0, 0, 1),
+        Vector3.new(-1, 0, 0), Vector3.new(0, 0, -1),
+    }
+    local function stopHover()
+        if hoverWatcher then hoverWatcher:Disconnect(); hoverWatcher = nil end
+        if hoverVelocity then hoverVelocity:Destroy(); hoverVelocity = nil end
+        if hoverAttachment then hoverAttachment:Destroy(); hoverAttachment = nil end
+        if modules.chestRecovery and modules.chestRecovery.cleanup == stopHover then modules.chestRecovery = nil end
+    end
+    local function startHover()
+        if modules.chestRecovery then modules.chestRecovery.cleanup() end
+        modules.chestRecovery = {cleanup = stopHover}
+        hoverAttachment = Instance.new("Attachment")
+        hoverAttachment.Name, hoverAttachment.Parent = "ChestRecoveryAttachment", root
+        hoverVelocity = Instance.new("LinearVelocity")
+        hoverVelocity.Name = "ChestRecoveryVelocity"
+        hoverVelocity.Attachment0 = hoverAttachment
+        hoverVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+        hoverVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+        hoverVelocity.VectorVelocity = Vector3.zero
+        hoverVelocity.ForceLimitsEnabled = false
+        hoverVelocity.Enabled, hoverVelocity.Parent = true, root
+        local function holdPosition()
+            if (recoveryToken and not actionIsCurrent(recoveryToken)) or not pcall(checkTarget) then
+                stopHover()
+                return
+            end
+            root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+        end
+        holdPosition()
+        hoverWatcher = game:GetService("RunService").PreSimulation:Connect(holdPosition)
+    end
     local function chestFrame()
         local mine = playerGui:FindFirstChild("MineGui")
         return mine and mine:FindFirstChild("ChestFrame")
     end
+    local function retryRecovery(chestAction)
+        checkTarget()
+        recoveryTurn = recoveryTurn + 1
+        if retryTeleport and recoveryTurn % 2 == 1 then
+            local confirmed, reason = retryTeleport()
+            teleported = confirmed == true
+            if not teleported and reason then error(reason, 0) end
+        else
+            chestAction()
+        end
+    end
     local function triggerChest()
         checkTarget()
-        local prompt = waitUntil(function()
+        local function findPrompt()
             checkTarget()
             local found
             for _, candidate in ipairs(chest:GetDescendants()) do
@@ -2053,7 +2101,14 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
                 end
             end
             return found
-        end, nil, recoveryName .. ": waiting for your chest proximity prompt")
+        end
+        local prompt
+        if retryTeleport then
+            -- A missing prompt must not prevent the next TeleportButton turn.
+            prompt = assert(findPrompt(), recoveryName .. ": your chest proximity prompt is not ready.")
+        else
+            prompt = waitUntil(findPrompt, nil, recoveryName .. ": waiting for your chest proximity prompt")
+        end
         local reportStand = newRetryMonitor(recoveryName .. ": finding a safe position above the chest")
         local stand, position
         while not stand do
@@ -2063,9 +2118,20 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
                 or parent:IsA("BasePart") and parent.Position or base.Position
             local problem
             stand, problem = chestTopPosition(chest, base, character, root, position, prompt.MaxActivationDistance)
-            if not stand then reportStand(problem); pause(CONFIG.General.ScanPoll) end
+            if not stand then
+                if retryTeleport then error(problem, 0) end
+                reportStand(problem)
+                pause(CONFIG.General.ScanPoll)
+            end
         end
         reportStand(nil, true)
+        if retryTeleport then
+            -- Use a different one-stud horizontal offset each chest attempt, never cumulatively.
+            offsetIndex = offsetIndex % #offsets + 1
+            stand = stand + offsets[offsetIndex]
+            assert((stand - position).Magnitude <= prompt.MaxActivationDistance - 0.25,
+                recoveryName .. ": offset position is outside chest prompt range.")
+        end
         local facing = Vector3.new(position.X, stand.Y, position.Z)
         if (facing - stand).Magnitude < 0.001 then facing = stand + Vector3.new(0, 0, -1) end
         root.CFrame = CFrame.new(stand, facing)
@@ -2114,21 +2180,28 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
         else firesignal(button.Activated, nil, 1) end
     end
     local ok, message = pcall(function()
-        triggerChest()
+        if retryTeleport then
+            startHover()
+            pcall(triggerChest)
+        else
+            triggerChest()
+        end
         waitUntil(function()
             checkTarget()
-            return visible(chestFrame())
-        end, nil, recoveryName .. ": waiting for the chest UI to open", triggerChest)
+            return teleported or visible(chestFrame())
+        end, nil, recoveryName .. ": waiting for the chest UI to open", function() retryRecovery(triggerChest) end)
+        if teleported then return end
         -- This interaction only resets the UI; it never requests chest contents.
         pcall(closeChest)
         waitUntil(function()
             checkTarget()
-            return not visible(chestFrame())
-        end, nil, recoveryName .. ": closing the chest UI", closeChest)
+            return teleported or not visible(chestFrame())
+        end, nil, recoveryName .. ": closing the chest UI", function() retryRecovery(closeChest) end)
     end)
+    stopHover()
     releaseInputs()
     local stillCurrent = pcall(check)
-    if stillCurrent and player.Character == character and root:IsDescendantOf(character) then
+    if not teleported and stillCurrent and player.Character == character and root:IsDescendantOf(character) then
         pcall(function()
             root.CFrame = savedCFrame
             root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
@@ -2138,6 +2211,7 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation)
         originalRoot, originalCFrame = nil, nil
     end
     if not ok then error(message, 0) end
+    if retryTeleport then return teleported end
 end
 
 local function tryUnitExit(focus, method)
@@ -2218,16 +2292,34 @@ do
                 logInfo("Startup", "TeleportButton changed character position; starting automation.")
                 return true
             end
+            local attemptTeleport
             local function recoverTeleportUi()
                 -- Discard the failed click's baseline before moving to the chest.
                 -- Recovery movement must never confirm a TeleportButton click.
                 pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
                 pages.master.status.Text = "TeleportButton unavailable/unresponsive; refreshing the UI through your chest..."
                 footer.Text = pages.master.status.Text
-                local ok, message = pcall(recoverUnitPanelThroughChest, nil, "TeleportButton recovery")
-                if not ok and alive then reportRetry("TeleportButton chest recovery: " .. tostring(message)) end
+                local ok, result = pcall(recoverUnitPanelThroughChest, nil, "TeleportButton recovery", function()
+                    -- This observation window contains no chest repositioning or restoration.
+                    pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
+                    local clicked, message = pcall(attemptTeleport)
+                    if clicked then
+                        local deadline = os.clock() + CONFIG.General.StartupTeleportClickInterval
+                        repeat
+                            checkAlive()
+                            if movedAfterClick() then return true end
+                            if os.clock() >= deadline then break end
+                            task.wait(CONFIG.General.WaitPoll)
+                        until false
+                    end
+                    -- Discard failed button baselines before the next one-stud chest offset.
+                    pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
+                    return false, clicked and "TeleportButton has not moved your character during recovery." or tostring(message)
+                end)
+                if not ok and alive then reportRetry("TeleportButton chest recovery: " .. tostring(result)) end
+                return ok and result == true and movedAfterClick()
             end
-            local function attemptTeleport()
+            attemptTeleport = function()
                 teleportFailed = false
                 local currentGui = player:FindFirstChildOfClass("PlayerGui")
                 if currentGui then playerGui = currentGui end
@@ -2275,7 +2367,7 @@ do
                 if movedAfterClick() then return confirmTeleport() end
                 if os.clock() >= nextAttempt then
                     if pendingPosition then
-                        recoverTeleportUi()
+                        if recoverTeleportUi() then return confirmTeleport() end
                         if not alive then return false end
                     end
                     nextAttempt = os.clock() + CONFIG.General.StartupTeleportClickInterval
@@ -2292,7 +2384,7 @@ do
                     else
                         pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
                         if teleportFailed then
-                            recoverTeleportUi()
+                            if recoverTeleportUi() then return confirmTeleport() end
                             if not alive then return false end
                         end
                         message = "Startup retry: " .. tostring(result)
@@ -8075,6 +8167,7 @@ end
 local function resetRun()
     table.clear(scriptErrors.retries)
     if modules.idleClick then modules.idleClick.stop() end
+    if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current = nil
     releaseInputs()
     if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
