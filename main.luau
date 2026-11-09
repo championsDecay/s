@@ -3071,7 +3071,6 @@ local function syncUnitSequenceZone(zoneId)
     unitCountSnapshot, cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone = nil, nil, nil
     masterRequirementProgress[zoneId] = {}
     refreshMasterRequirements(zoneId)
-    lastStageSkip.units, lastStageSkip.mutation, lastStageSkip.upgradingUnit = nil, nil, nil
     refreshUnitCooldown()
     logInfo("Upgrades", previous .. " -> " .. zoneId .. ": unit sequence cooldown reset for the new zone.")
 end
