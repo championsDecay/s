@@ -7128,10 +7128,12 @@ local function mine()
                         if onScreen then
                             setEnabled(true, "Mining: " .. targetName)
                             ignoreUiUntil = os.clock() + 0.1
-                            local input = game:GetService("VirtualInputManager")
-                            local x, y = math.round(point.X), math.round(point.Y)
-                            input:SendMouseButtonEvent(x, y, 0, true, game, 0)
-                            input:SendMouseButtonEvent(x, y, 0, false, game, 0)
+                            local detector = target:FindFirstChild("NodeClick", true)
+                            assert(detector and detector:IsA("ClickDetector"), "Selected node has no NodeClick ClickDetector")
+                            checkAlive()
+                            VIM:SendMouseMoveEvent(point.X, point.Y, game)
+                            VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
+                            VIM:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
                             nextClick = os.clock() + 0.15
                         end
                     end
