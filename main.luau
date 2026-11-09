@@ -424,7 +424,6 @@ local runScope = {current = nil, threads = setmetatable({}, {__mode = "k"}), bac
 local connections, shownPrompts = {}, {}
 local heldPrompt, heldKey, mouseHeld = nil, nil, nil
 local originalRoot, originalCFrame = nil, nil
-local activeSlotTween
 local dragging, touchPointer, dragStart, panelStart = false, nil, nil, nil
 local modules, pages, tabs, stageRows = {}, {}, {}, {}
 local order = CONFIG.Flow.Order
@@ -807,9 +806,6 @@ local function getGameEvent()
 end
 
 local function releaseInputs()
-    local tween = activeSlotTween
-    activeSlotTween = nil
-    if tween then pcall(function() tween:Cancel() end) end
     local prompt, key, mouse = heldPrompt, heldKey, mouseHeld
     heldPrompt, heldKey, mouseHeld = nil, nil, nil
     if prompt then pcall(function() prompt:InputHoldEnd() end) end
@@ -827,53 +823,6 @@ local function restorePosition()
             root.AssemblyAngularVelocity = Vector3.zero
         end)
     end
-end
-
-local function tweenToSlotPad(root, pad, offset, checkCurrent)
-    local character = player.Character
-    local function check()
-        checkAlive()
-        if checkCurrent then checkCurrent() end
-        assert(character and player.Character == character and root and root:IsDescendantOf(character),
-            "Character changed while moving to the slot pad.")
-        assert(pad and pad:IsA("BasePart") and pad:IsDescendantOf(workspace), "Slot Pad is unavailable.")
-    end
-    check()
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    assert(humanoid and humanoid.Health > 0, "Character is not ready to move to the slot pad.")
-    local frame, size = pad.CFrame, pad.Size
-    local halfHeight = (math.abs(frame.RightVector.Y) * size.X
-        + math.abs(frame.UpVector.Y) * size.Y + math.abs(frame.LookVector.Y) * size.Z) / 2
-    local standingHeight = humanoid.HipHeight + root.Size.Y / 2
-    if humanoid.RigType == Enum.HumanoidRigType.R6 then
-        local leg = character:FindFirstChild("Left Leg")
-        standingHeight = standingHeight + (leg and leg:IsA("BasePart") and leg.Size.Y or 2)
-    end
-    local position = pad.Position + Vector3.new(0, halfHeight + standingHeight + 0.25, 0) + (offset or Vector3.zero)
-    local _, yaw = root.CFrame:ToOrientation()
-    local goal = CFrame.new(position) * CFrame.Angles(0, yaw, 0)
-    local tween = game:GetService("TweenService"):Create(root,
-        TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = goal})
-    activeSlotTween = tween
-    root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-    local ok, message = pcall(function()
-        tween:Play()
-        local deadline = os.clock() + 1.25
-        while true do
-            check()
-            assert(activeSlotTween == tween and tween.PlaybackState ~= Enum.PlaybackState.Cancelled,
-                "Slot pad movement was cancelled.")
-            if tween.PlaybackState == Enum.PlaybackState.Completed then break end
-            assert(os.clock() < deadline, "Slot pad movement did not complete.")
-            task.wait(CONFIG.General.WaitPoll)
-        end
-    end)
-    if activeSlotTween == tween then activeSlotTween = nil end
-    if not ok then
-        pcall(function() tween:Cancel() end)
-        error(message, 0)
-    end
-    root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
 end
 
 local gui = Instance.new("ScreenGui")
@@ -4627,7 +4576,6 @@ local function emptyDisplayUnits(plot, phase)
                     root.AssemblyLinearVelocity = Vector3.zero
                     root.AssemblyAngularVelocity = Vector3.zero
                     pause(TELEPORT_SETTLE)
-                    tweenToSlotPad(root, upgrade.Parent:FindFirstChild("Pad"), unitRetryOffset(attempt), function() checkPlot(plot) end)
                     prompt = holderPrompt(plot, slot.name, true)
                     if hasPickUpAction(prompt) and prompt.Enabled then
                         heldPrompt = prompt
@@ -5153,7 +5101,6 @@ local function placeHotbarUnit(plot, holderName, entry, copy)
         root.AssemblyLinearVelocity = Vector3.zero
         root.AssemblyAngularVelocity = Vector3.zero
         pause(TELEPORT_SETTLE)
-        tweenToSlotPad(root, upgrade.Parent:FindFirstChild("Pad"), unitRetryOffset(attempt), function() checkPlot(plot) end)
         if alreadyPlaced(attempt) then reportRetry(nil, true); return true end
         if UserInputService:GetFocusedTextBox() then error("Leave the text field before placing units.", 0) end
         if attempt > 1 then
@@ -6796,7 +6743,6 @@ do
             root.CFrame = CFrame.new(base.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, base.Position)
             root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
             pause(CONFIG.HotbarUpgrade.Placement.TeleportDelay)
-            tweenToSlotPad(root, holder:FindFirstChild("Pad"), offset, function() checkPlot(plot) end)
         end
         local function placeIntoM1(entry, copy)
             closeStatFocus()
@@ -7654,7 +7600,6 @@ actions[3] = function()
         root.CFrame = CFrame.new(base.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0), base.Position)
         root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
         pause(0.35)
-        tweenToSlotPad(root, holder:FindFirstChild("Pad"), nil, function() checkFlow(); validatePlot(plot) end)
         local deadline = os.clock() + ACTION_TIMEOUT
         local currentPrompt = prompt()
         while not occupied() and not currentPrompt.Enabled and os.clock() < deadline do
@@ -8136,7 +8081,6 @@ run = function()
             pause(CONFIG.Units.TeleportDelay)
             checkPlot(plot)
             assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
-            tweenToSlotPad(root, holder:FindFirstChild("Pad"), offset, function() checkPlot(plot) end)
             prompt = slotPrompt(plot, target)
             if slotReady(prompt) then return true end
             assert(prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled
