@@ -367,7 +367,7 @@ local CONFIG = {
         InitialTab = "master",
         Width = 620, Height = 620,
         ExpandedScale = 0.9,
-        MinimizedWidth = 342, MinimizedHeight = 246,
+        MinimizedWidth = 342, MinimizedHeight = 208,
         Colors = {
             bg = Color3.fromRGB(22, 25, 34), surface = Color3.fromRGB(31, 35, 47),
             muted = Color3.fromRGB(164, 174, 196), text = Color3.fromRGB(235, 240, 250),
@@ -990,23 +990,23 @@ local minimizedControls = make("Frame", panel, {
     Name = "MinimizedControls", Position = UDim2.fromOffset(8, 34), Size = UDim2.new(1, -16, 1, -42),
     BackgroundTransparency = 1, Visible = false,
 })
-local minimizedMaster = button(minimizedControls, "Master: OFF", UDim2.fromOffset(0, 0), UDim2.new(0.5, -3, 0, 40))
+local minimizedMaster = button(minimizedControls, "Master: OFF", UDim2.fromOffset(0, 0), UDim2.new(0.5, -3, 0, 32))
 minimizedMaster.Name = "MinimizedMaster"
 minimizedMaster.TextSize = 14
 do
-    local tutorialButton = button(minimizedControls, "Auto complete tutorial", UDim2.new(0.5, 3, 0, 0), UDim2.new(0.5, -3, 0, 40))
+    local tutorialButton = button(minimizedControls, "Auto complete tutorial", UDim2.new(0.5, 3, 0, 0), UDim2.new(0.5, -3, 0, 32))
     tutorialButton.Name = "AutoCompleteTutorial"
-    tutorialButton.TextSize = 14
+    tutorialButton.TextSize = 13
     tutorialButton.TextWrapped = true
-    local tutorialStatus = label(minimizedControls, "", UDim2.fromOffset(0, 210), UDim2.new(1, 0, 0, 36), 11)
+    local tutorialStatus = label(minimizedControls, "", UDim2.fromOffset(0, 170), UDim2.new(1, 0, 0, 36), 11)
     tutorialStatus.TextWrapped = true
     pages.tutorial = {name = "Auto complete tutorial", run = tutorialButton, status = tutorialStatus, runText = "Auto complete tutorial"}
     minimizedActions.getHeight = function()
-        return CONFIG.UI.MinimizedHeight + (tutorialStatus.Visible and 42 or 0)
+        return CONFIG.UI.MinimizedHeight + (tutorialStatus.Visible and 40 or 0)
     end
     minimizedActions.refreshTutorial = function()
         tutorialButton.Visible = not preferences.tutorialHidden
-        minimizedMaster.Size = UDim2.new(preferences.tutorialHidden and 1 or 0.5, preferences.tutorialHidden and 0 or -3, 0, 40)
+        minimizedMaster.Size = UDim2.new(preferences.tutorialHidden and 1 or 0.5, preferences.tutorialHidden and 0 or -3, 0, 32)
         tutorialStatus.Visible = not preferences.tutorialHidden and tutorialStatus.Text ~= ""
         if minimized then
             local height = minimizedActions.getHeight()
@@ -1116,7 +1116,7 @@ end
 
 do
     local notificationBox = make("TextLabel", minimizedControls, {
-        Name = "MinimizedNotificationBox", Position = UDim2.fromOffset(0, 180), Size = UDim2.new(1, 0, 0, 26),
+        Name = "MinimizedNotificationBox", Position = UDim2.fromOffset(0, 122), Size = UDim2.new(1, 0, 0, 24),
         BackgroundColor3 = colors.idle, BackgroundTransparency = 0, BorderSizePixel = 0, Visible = true,
         Text = "Notifications", Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = colors.text,
         TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, ZIndex = 5,
@@ -1141,7 +1141,7 @@ do
 end
 
 do
-    local clickArea = button(minimizedControls, "Idle click area (every 2s)", UDim2.fromOffset(0, 156), UDim2.new(1, 0, 0, 20))
+    local clickArea = button(minimizedControls, "Idle click (2s)", UDim2.new(0.5, 3, 0, 92), UDim2.new(0.5, -3, 0, 26))
     clickArea.Name, clickArea.TextSize = "MinimizedIdleClickArea", 10
     clickArea.BackgroundColor3, clickArea.TextColor3 = colors.surface, colors.muted
     clickArea.AutoButtonColor, clickArea.Selectable, clickArea.Active = false, false, true
@@ -2331,7 +2331,7 @@ do
         {"Trial", {"TrialStone", "Plinth1"}, ownPlot = true},
     }) do
         local buttonIndex = ({4, 2, 3, 1})[index]
-        local shortcut = button(minimizedControls, destination[1], UDim2.new((buttonIndex - 1) / 4, buttonIndex - 1, 0, 74),
+        local shortcut = button(minimizedControls, destination[1], UDim2.new((buttonIndex - 1) / 4, buttonIndex - 1, 0, 64),
             UDim2.new(1 / 4, -3, 0, 24))
         shortcut.Name = "Teleport" .. destination[1]:gsub(" ", "")
         shortcut.TextSize = 11
@@ -2363,7 +2363,7 @@ do
         if teleportKeys[index] then hotkeyActions[teleportKeys[index]] = teleportOnce end
     end
 
-    local rollToggle = button(minimizedControls, "Enchant Roll: OFF", UDim2.fromOffset(0, 44), UDim2.new(0.5, -3, 0, 26))
+    local rollToggle = button(minimizedControls, "Enchant Roll: OFF", UDim2.fromOffset(0, 36), UDim2.new(0.5, -3, 0, 24))
     rollToggle.Name = "EnchantRollToggle"
     rollToggle.TextSize = 11
     rollToggle.TextWrapped = true
@@ -2408,7 +2408,7 @@ do
     connect(rollToggle.Activated, toggleRoll)
     hotkeyActions[Enum.KeyCode.Two] = toggleRoll
 
-    local openCrates = button(minimizedControls, "Open crates", UDim2.new(0.5, 3, 0, 44), UDim2.new(0.5, -3, 0, 26))
+    local openCrates = button(minimizedControls, "Open crates", UDim2.new(0.5, 3, 0, 36), UDim2.new(0.5, -3, 0, 24))
     openCrates.Name = "ColossusOpenButton"
     openCrates.TextSize = 11
     openCrates.TextWrapped = true
@@ -2574,10 +2574,11 @@ end
 -- It never polls or retries automatically; Run once remains a separate manual pass.
 -- Other MinePlots/weather use the independent automatic plotCleanup worker above.
 do
-    local runOnce = button(minimizedControls, "Workspace cleanup - Run once", UDim2.fromOffset(0, 104), UDim2.new(1, 0, 0, 26))
+    local runOnce = button(minimizedControls, "Cleanup: Run once", UDim2.fromOffset(0, 92), UDim2.new(0.5, -3, 0, 26))
     runOnce.Name, runOnce.TextSize = "WorkspaceCleanupRunOnce", 12
-    local status = label(minimizedControls, "Keeps script paths and prompts. Rejoin to restore.", UDim2.fromOffset(0, 134), UDim2.new(1, 0, 0, 18), 10)
+    local status = label(minimizedControls, "Keeps script paths and prompts. Rejoin to restore.", UDim2.fromOffset(0, 150), UDim2.new(1, 0, 0, 16), 10)
     status.Name, status.TextWrapped = "WorkspaceCleanupStatus", false
+    status.TextTruncate = Enum.TextTruncate.AtEnd
     local running, completed = false, false
     local automaticAttempted = false
 
@@ -2758,20 +2759,20 @@ end
         if not alive or running or completed then return end
         running = true
         runOnce.Active, runOnce.AutoButtonColor = false, false
-        runOnce.Text = "Workspace cleanup - Running..."
+        runOnce.Text = "Cleanup: Running..."
         local ok, removed, failed = pcall(scan)
         running = false
         if not alive then return end
         if ok and failed == 0 then
             completed = true
-            runOnce.Text = "Workspace cleanup - Done"
+            runOnce.Text = "Cleanup: Done"
             runOnce.BackgroundColor3 = colors.idle
             status.Text = string.format("Removed %d branches. Rejoin to restore.", removed)
             status.TextColor3 = colors.success
             logInfo("Workspace Cleanup", status.Text)
         else
             runOnce.Active, runOnce.AutoButtonColor = true, true
-            runOnce.Text = "Workspace cleanup - Retry"
+            runOnce.Text = "Cleanup: Retry"
             status.Text = "Cleanup incomplete. Try again when your plot is ready."
             status.TextColor3 = colors.error
             local reason = ok and string.format("Removed %d branches; %d failed.", removed, failed) or tostring(removed)
