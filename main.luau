@@ -1539,7 +1539,7 @@ Unavailable upgrade buttons stop progress rather than sending requests. Unfinish
         unlockSlots = [[ACTIONS
 1. Run only in Z4. Scan all numbered holder slots in numeric order before Required Units.
 2. Move to each locked slot, unequip tools, and activate its enabled Unlock / Unlock at the hub prompt.
-3. Make up to five attempts per locked slot. Every attempt uses a different random one-stud horizontal offset and holds the unlock prompt for two seconds. After every failed attempt, send a fresh Equip Best request.
+3. Make up to five attempts per locked slot. Every attempt repeats the teleport, tween to the slot pad, and two-second unlock prompt hold using a different random one-stud horizontal offset. After every failed attempt, send a fresh Equip Best request.
 4. Confirm the slot now offers Place or Pick Up, then move to the next locked slot with its own five-attempt limit. Stop at the first slot still locked after five attempts. Missing/disabled prompts and replaced controls are reacquired on each attempt.
 
 UNIT-STAGE RECOVERY
@@ -8067,7 +8067,9 @@ run = function()
             local upgrade = holder and holder:FindFirstChild("UpgradePart")
             local character = player.Character
             local root = character and character:FindFirstChild("HumanoidRootPart")
-            assert(root and upgrade and upgrade:IsA("BasePart"), target .. ": character or UpgradePart is unavailable.")
+            local pad = holder and holder:FindFirstChild("Pad")
+            assert(root and upgrade and upgrade:IsA("BasePart") and pad and pad:IsA("BasePart"),
+                target .. ": character, UpgradePart or Pad is unavailable.")
             if originalRoot ~= root then originalRoot, originalCFrame = root, root.CFrame end
             local humanoid = character:FindFirstChildOfClass("Humanoid")
             if humanoid then humanoid:UnequipTools() end
@@ -8081,6 +8083,21 @@ run = function()
             pause(CONFIG.Units.TeleportDelay)
             checkPlot(plot)
             assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
+            local tweenStart = root.CFrame
+            local tweenTarget = CFrame.new(pad.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, pad.Position)
+            local tweenStartedAt = os.clock()
+            -- Keep the tween in this worker so Stop/unload cancels movement immediately.
+            while true do
+                checkAlive()
+                checkPlot(plot)
+                assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
+                assert(pad:IsDescendantOf(holder) and holder:IsDescendantOf(plot), target .. ": slot changed during tween.")
+                local alpha = math.min((os.clock() - tweenStartedAt) / 0.25, 1)
+                root.CFrame = tweenStart:Lerp(tweenTarget, alpha)
+                root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+                if alpha >= 1 then break end
+                pause(CONFIG.General.WaitPoll)
+            end
             prompt = slotPrompt(plot, target)
             if slotReady(prompt) then return true end
             assert(prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled
