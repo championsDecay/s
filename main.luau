@@ -33,13 +33,14 @@ local CONFIG = {
             pickaxe = true,
             upgrades = true,
             upgradingOldUnit = true,
+            unlockSlots = true,
             units = true,
             mutation = true,
             upgradingUnit = true,
             cycleEnd = true,
         },
 
-        Order = { "sell", "pickaxe", "upgrades", "upgradingOldUnit", "units", "mutation", "upgradingUnit", "cycleEnd" },
+        Order = { "sell", "pickaxe", "upgrades", "upgradingOldUnit", "unlockSlots", "units", "mutation", "upgradingUnit", "cycleEnd" },
         StageDelay = 0.75,
         CycleDelay = 20,
     },
@@ -426,8 +427,8 @@ local originalRoot, originalCFrame = nil, nil
 local dragging, touchPointer, dragStart, panelStart = false, nil, nil, nil
 local modules, pages, tabs, stageRows = {}, {}, {}, {}
 local order = CONFIG.Flow.Order
-local validStages, seenStages = {sell=true, pickaxe=true, upgrades=true, upgradingOldUnit=true, units=true, mutation=true, upgradingUnit=true, cycleEnd=true}, {}
-assert(#order == 8 and order[8] == "cycleEnd", "CONFIG.Flow.Order must contain all eight stages, with cycleEnd last.")
+local validStages, seenStages = {sell=true, pickaxe=true, upgrades=true, upgradingOldUnit=true, unlockSlots=true, units=true, mutation=true, upgradingUnit=true, cycleEnd=true}, {}
+assert(#order == 9 and order[5] == "unlockSlots" and order[9] == "cycleEnd", "CONFIG.Flow.Order must contain all nine stages, with unlockSlots fifth and cycleEnd last.")
 for _, id in ipairs(order) do
     assert(validStages[id] and not seenStages[id], "CONFIG.Flow.Order has an invalid or duplicate stage: " .. tostring(id))
     seenStages[id] = true
@@ -492,6 +493,7 @@ do
 end
 local consoleStageLabels = {
     sell = "Sell", pickaxe = "Pickaxe", upgrades = "Upgrades", upgradingOldUnit = "Upgrade Old Units",
+    unlockSlots = "Unlock slots",
     units = "Required Units", mutation = "Mutate Units", upgradingUnit = "Upgrade Units", cycleEnd = "Cycle end",
 }
 local consoleStageLabelWidth = 0
@@ -723,7 +725,7 @@ do
             or data.deleteOtherPlots == nil or data.workspaceCleanupEnabled == nil
             or data.tutorialHidden == nil or data.discordNotifications == nil
             or data.dailySpinEnabled == nil or data.autoRedeemEnabled == nil or data.redeemedCodes == nil
-            or not validFirstLoadedAt then
+            or not validFirstLoadedAt or type(data.stages) == "table" and data.stages.unlockSlots == nil then
             savePreferences()
         end
     end
@@ -1210,23 +1212,24 @@ do
         return toggle
     end
 end
-assert(({master=true, sell=true, pickaxe=true, upgrades=true, upgradingOldUnit=true, units=true, mutation=true, upgradingUnit=true, cycleEnd=true})[CONFIG.UI.InitialTab], "Invalid CONFIG.UI.InitialTab")
+assert(({master=true, sell=true, pickaxe=true, upgrades=true, upgradingOldUnit=true, unlockSlots=true, units=true, mutation=true, upgradingUnit=true, cycleEnd=true})[CONFIG.UI.InitialTab], "Invalid CONFIG.UI.InitialTab")
 
 local specs = {
     {"master", "Master", "Start Master", "Runs enabled stages in order and repeats until stopped."},
     {"sell", "Sell", "Run Auto Sell", "1. Collect the chest at your plot.\n2. Teleport to the Hub and open the sell stand.\n3. Click Select All, then Sell.\n4. Return to your plot."},
     {"pickaxe", "Pickaxe", "Buy Best Pickaxe", "1. Open the shop, wait for it to refresh, then close it.\n2. Find the highest unlocked pickaxe.\n3. Check its saved limit and whether its buy button is green.\n4. Record and send one purchase request if eligible."},
-    {"upgrades", "Upgrades", "Run Upgrades", "1. Open the skill tree and scan the current zone.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-7 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
+    {"upgrades", "Upgrades", "Run Upgrades", "1. Open the skill tree and scan the current zone.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-4 and 6-8 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
     {"upgradingOldUnit", "Upgrade Old Units", "Run Upgrade Old Units", "1. Check that current-zone Density is 0.\n2. Find displayed units matching the previous zone's required names.\n3. Upgrade Damage toward the target, starting with the lowest level.\n4. Stop when the target is reached or further upgrades are unavailable."},
+    {"unlockSlots", "Unlock slots", "Run Unlock slots", "Z4 only. Try each locked slot up to five times with a random one-stud offset and a two-second hold. Stop at the first slot still locked after five attempts; skip stages 6-8 that cycle. Once all slots unlock, skip this stage on later cycles."},
     {"units", "Required Units", "Run Required Units", "1. Check cooldown and clear the hotbar.\n2. Count whitelisted inventory copies plus displayed units.\n3. If eligible, remove displayed units.\n4. Fill empty unlocked pads using one stack at a time through hotbar 1."},
     {"mutation", "Mutate Units", "Run Mutate Units", "1. Check zone rules, Density, and Required Units preparation.\n2. Scan mutations in the first required unlocked holders.\n3. Roll eligible units below the active targets.\n4. Rescan until the targets are met or further rolls are unavailable."},
     {"upgradingUnit", "Upgrade Units", "Run Upgrade Units", "1. Check cooldown and scan the required lineup.\n2. Upgrade Damage to the allowed cap, with stat catch-up between batches.\n3. Finish Speed and MineSpeed catch-up on eligible units."},
-    {"cycleEnd", "Cycle end", "Run Cycle end", "1. Equip Best and wait for the equip delay.\n2. Select Current Zone if enabled.\n3. Select Next Zone if enabled.\n4. Attempt to unlock remaining holder slots."},
+    {"cycleEnd", "Cycle end", "Run Cycle end", "1. Equip Best and wait for the equip delay.\n2. Select Current Zone if enabled.\n3. Select Next Zone if enabled."},
 }
 for index, spec in ipairs(specs) do
     local id, name, runText, description = spec[1], spec[2], spec[3], spec[4]
     local tab = button(tabBar, name, UDim2.new((index - 1) / #specs, 2, 0, 0), UDim2.new(1 / #specs, -4, 1, 0))
-    tab.TextSize = (id == "units" or id == "mutation" or id == "upgradingUnit" or id == "upgradingOldUnit") and 11 or 13
+    tab.TextSize = (id == "unlockSlots" or id == "units" or id == "mutation" or id == "upgradingUnit" or id == "upgradingOldUnit") and 11 or 13
     tab.TextWrapped = true
     if id == "units" then
         make("Frame", tabBar, {
@@ -1425,7 +1428,7 @@ Unlimited Best Pickaxe bypasses the saved limit for the highest unlocked pickaxe
 Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+4 Events Board; Ctrl+5 Mailbox; Ctrl+6 Trial. Rolling/teleport shortcuts turn Master OFF and are ignored while typing.
 
 HOTBAR UPGRADES
-Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the eight-stage cycle. Place each selected copy, check its identity, upgrade Damage toward the configured target and Speed/Mining to their available maxima, then pick it up before the next copy. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
+Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Place each selected copy, check its identity, upgrade Damage toward the configured target and Speed/Mining to their available maxima, then pick it up before the next copy. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
         sell = [[ACTIONS
 1. Startup clicks OfflineFrame.Content.CollectButton when the offline popup is visible, waits 0.5 seconds, then clicks TeleportButton. Each click is observed for up to one second; attempts continue until the same character moves more than 10 studs after a teleport click. A hidden or absent offline popup does not block retries. A missing/hidden TeleportButton or a click without confirmed movement triggers a chest prompt/open-close recovery before retrying; chest recovery movement never confirms a teleport.
 2. Teleport to your plot, wait, and collect the plot chest.
@@ -1465,14 +1468,14 @@ Before Density is fully upgraded, other available nodes must be above its next-n
 Use configured node-category mappings, falling back to the node base name. Skip invalid categories. Recheck the node, its color, and the Density II gate before each purchase. Retry while the node remains available, respecting the request delay and reporting prolonged retries. Stop processing a node when it disappears, becomes unavailable, or valid Colossus Pips reach 1 or higher in the current zone. Rescan Density and count confirmed green upgrades; repeat while upgrades are confirmed.
 
 COLOSSUS / NOTIFICATIONS
-Positive valid Colossus Pips confirms the unlock. Turn stages 3-7 OFF as soon as valid Colossus Pips reach 1 or higher (for example 1/5), in any current zone; otherwise turn stages 3-7 ON. Turn Unlimited Best Pickaxe ON at the max zone, even without positive Colossus Pips, and OFF in other zones. Send a Colossus alert with username, zone name/ID, and Pips. Reaching the highest configured zone sends a separate max-zone alert to the same webhook.
+Positive valid Colossus Pips confirms the unlock. Turn stages 3-4 and 6-8 OFF as soon as valid Colossus Pips reach 1 or higher (for example 1/5), in any current zone; otherwise turn stages 3-4 and 6-8 ON. Turn Unlimited Best Pickaxe ON at the max zone, even without positive Colossus Pips, and OFF in other zones. Send a Colossus alert with username, zone name/ID, and Pips. Reaching the highest configured zone sends a separate max-zone alert to the same webhook.
 
 Both messages end their elapsed-time line with @everyone. Time is measured from the account/game's cached first script load, including restarts and offline time. Old caches missing a valid timestamp start tracking on their next load. Under one hour displays unknown. A valid saved timestamp is retained.
 
 Each notification type has its own sent flag per zone. Pending requests suppress duplicates in the current run; successful HTTP responses save the sent flag in the preferences cache. Failed requests can be retried on later checks. Missing webhook/request support skips sending. A cache-save failure is warned because it can allow a repeat after restarting.
 
 WHEN UPGRADES IS OFF
-In Master, open the skill tree and freshly scan the Canvas zone, Density, and Colossus Pips every cycle, including while Upgrades is OFF. Recheck Colossus progress in the current zone. If valid Colossus Pips have not reached 1, turn stages 3-7 ON and resume Upgrades in the same cycle. Turn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. These scans also prepare zone selection and tutorial hiding.
+In Master, open the skill tree and freshly scan the Canvas zone, Density, and Colossus Pips every cycle, including while Upgrades is OFF. Recheck Colossus progress in the current zone. If valid Colossus Pips have not reached 1, turn stages 3-4 and 6-8 ON and resume Upgrades in the same cycle. Turn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. These scans also prepare zone selection and tutorial hiding.
 
 FINISH
 Close the skill tree and keep the zone/Density values ready for Cycle end. Current/next selection follows its toggles; a standalone Upgrades run selects zones immediately after finishing.]],
@@ -1533,20 +1536,27 @@ Cache identities and initial Damage/Speed/Mining levels for this run. Refresh Sp
 
 STOPS
 Unavailable upgrade buttons stop progress rather than sending requests. Unfinished stat catch-up pauses further Damage. Identity, plot, character, display, focus-target, unreadable-level, or invalid-response failures stop the stage. Close the focused unit panel on exit.]],
+        unlockSlots = [[ACTIONS
+1. Run only in Z4. Scan all numbered holder slots in numeric order before Required Units.
+2. Move to each locked slot, unequip tools, and activate its enabled Unlock / Unlock at the hub prompt.
+3. Make up to five attempts per locked slot. Every attempt uses a different random one-stud horizontal offset and holds the unlock prompt for two seconds. After every failed attempt, send a fresh Equip Best request.
+4. Confirm the slot now offers Place or Pick Up, then move to the next locked slot with its own five-attempt limit. Stop at the first slot still locked after five attempts. Missing/disabled prompts and replaced controls are reacquired on each attempt.
+
+UNIT-STAGE RECOVERY
+A slot that stays locked after five attempts skips stages 6-8 for the current cycle; Cycle end still runs if enabled. If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units (stage 6) reports a required slot without its unlocked placement prompt in Z4, clear the completed-unlock state and return to this stage with the same five-attempt limit; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
+
+STOPS
+Stop/unload cancels retries and releases held input. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
         cycleEnd = [[ACTIONS
 1. Check plot ownership. Request Equip Best, wait the configured delay, and refresh observed mutation progress when a zone is known. A repeated cycle-end request in the same cycle is skipped.
 2. Select the cached current zone if its toggle is ON.
 3. Select the next numbered zone if its toggle is ON.
-4. Scan numbered holders for unlock prompts. Move to each holder, unequip tools, and hold enabled Unlock / Unlock at the hub prompts for at least one second plus padding.
 
 ZONE-SELECTION CONDITIONS
 Selection runs only if Upgrades has prepared zone/Density values. It can use the scan prepared while Upgrades is OFF. Both toggles OFF skips zone selection. Next means the cached zone number plus one; this requests selection without claiming the next zone is unlocked.
 
-HOLDER CONDITIONS
-Skip missing holders and unavailable/disabled prompts. If prompts are missing or still say Unlock, try again on later cycles. After a scan confirms at least one numbered holder and no remaining unlock/missing prompts, skip future unlock scans for this script execution.
-
 MASTER / STANDALONE
-Master attempts this stage after normal stages, including after a stage error, when Cycle end is enabled. Its own failure is reported and retried in later cycles. A standalone run may Equip Best and unlock holders while zone selection is skipped because no cycle scan is ready.]],
+Master attempts this stage after normal stages, including after a stage error, when Cycle end is enabled. Its own failure is reported and retried in later cycles. A standalone run may Equip Best while zone selection is skipped because no cycle scan is ready. Slot unlocking is handled only by the Z4 Unlock slots stage.]],
     }
     local common = "\n\nRUN SAFETY\nRun buttons start work only while idle and outside the click debounce. Stop/unload cancels active work and releases held inputs. Stages that move temporarily restore saved position where available. Missing required game objects, invalid settings, changed targets, or prolonged confirmation retries are reported as errors in the script logs; see Master for retry behavior."
     stageGuide = make("Frame", content, {
@@ -2960,6 +2970,7 @@ end
 local unitCountSnapshot
 local cycleUnitsPreparedZone
 local cycleUnitUpgradeReadyZone
+local cycleSkipUnitsReason
 local lastUnitSequence = -math.huge
 local unitSequenceZone
 
@@ -4111,8 +4122,8 @@ local function saveColossusStageToggles(zoneId, pips)
     local atMaxZone = isMaxZone(zoneId)
     local complete = colossusPipsUnlocked(pips)
     local changed = false
-    for index = 3, 7 do
-        local id = order[index]
+    -- Preserve the original Colossus-controlled stages after inserting Unlock slots.
+    for _, id in ipairs({"upgrades", "upgradingOldUnit", "units", "mutation", "upgradingUnit"}) do
         local enabled = not complete
         if preferences.stages[id] ~= enabled then changed = true end
         preferences.stages[id] = enabled
@@ -4128,7 +4139,7 @@ local function saveColossusStageToggles(zoneId, pips)
 
     local result = zoneId .. ": Colossus Pips " .. (pips or "not reached")
         .. (atMaxZone and "; max zone reached." or "; max zone not reached.")
-        .. (complete and " Stages 3-7 OFF." or " Stages 3-7 ON.")
+        .. (complete and " Stages 3-4 and 6-8 OFF." or " Stages 3-4 and 6-8 ON.")
         .. (atMaxZone and " Unlimited Best Pickaxe ON." or " Unlimited Best Pickaxe OFF.")
     if changed then
         result = result .. (saved and " Preferences saved." or " Preference save could not be verified.")
@@ -5179,7 +5190,7 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
         checkPlot(plot)
         local empty, displayed, problem = requiredPlacementState(plot, zoneId)
         if not empty then
-            -- Abort this stage so Master skips stages 5-7 and reaches cycle-end unlocking.
+            -- Master skips stages 6-8 and returns to Unlock slots for Z4 recovery.
             error(problem or "Required holder placement prompts are unavailable.", 0)
         elseif #empty == 0 then
             return finish(displayed, "all unlocked pads filled.")
@@ -7967,7 +7978,7 @@ local function resetRun()
     if unitUpgrade and unitUpgrade.cleanup then pcall(unitUpgrade.cleanup) end
     restorePosition()
     busy, activeRun, activeStage = false, nil, nil
-    cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone = nil, nil
+    cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone, cycleSkipUnitsReason = nil, nil, nil
     worker = nil
     cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady, cycleBestEquipped = nil, nil, nil, false, false
     if alive then
@@ -7982,44 +7993,134 @@ local function closeGamePanel(name)
     if frame and frame:IsA("GuiObject") then frame.Visible = false end
 end
 
-local holdersFullyUnlocked = false
-local function unlockCycleHolders(plot)
-    if holdersFullyUnlocked then return end
-    local holders = plot:FindFirstChild("Holders")
-    if not holders then return end
-    local complete, found = true, false
-    for _, holder in ipairs(holders:GetChildren()) do
-        if (tonumber(holder.Name:match("^M(%d+)$")) or 0) >= 1 then
-            found = true
-            local pad = holder:FindFirstChild("Pad")
-            local prompt = pad and pad:FindFirstChild("HolderPrompt")
-            if not prompt or not prompt:IsA("ProximityPrompt") then
-                complete = false
-            elseif (prompt.ActionText == "Unlock" or prompt.ActionText == "Unlock at the hub") then
-                checkAlive()
-                local upgrade = holder:FindFirstChild("UpgradePart")
-                local character = player.Character
-                local root = character and character:FindFirstChild("HumanoidRootPart")
-                if root and upgrade and upgrade:IsA("BasePart") then
-                    local humanoid = character:FindFirstChildOfClass("Humanoid")
-                    if humanoid then humanoid:UnequipTools() end
-                    root.CFrame = CFrame.new(upgrade.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0), upgrade.Position)
-                    root.AssemblyLinearVelocity = Vector3.zero
-                    root.AssemblyAngularVelocity = Vector3.zero
-                    pause(CONFIG.Units.TeleportDelay)
-                    if prompt.Parent and prompt.Enabled and (prompt.ActionText == "Unlock" or prompt.ActionText == "Unlock at the hub") then
-                        heldPrompt = prompt
-                        prompt:InputHoldBegin()
-                        pause(math.max(1, prompt.HoldDuration) + CONFIG.Units.RemovalHoldPadding)
-                        releaseInputs()
-                        pause(CONFIG.General.WaitPoll)
-                    end
-                end
-                if not prompt.Parent or (prompt.ActionText == "Unlock" or prompt.ActionText == "Unlock at the hub") then complete = false end
+local function skipCycleUnitStages(reason)
+    cycleSkipUnitsReason = reason
+    cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone = nil, nil
+    if activeRun == "master" then
+        for _, stage in ipairs({"units", "mutation", "upgradingUnit"}) do
+            if preferences.stages[stage] and stage ~= activeStage then
+                pages[stage].status.Text = "Skipped this cycle: " .. reason
+                pages[stage].status.TextColor3 = colors.muted
+                setMasterStageState(stage, "Skipped", colors.muted)
             end
         end
     end
-    holdersFullyUnlocked = found and complete
+end
+
+do
+local completedUnlockPlot
+local function slotPrompt(plot, name)
+    local holders = plot:FindFirstChild("Holders")
+    local holder = holders and holders:FindFirstChild(name)
+    local pad = holder and holder:FindFirstChild("Pad")
+    return pad and pad:FindFirstChild("HolderPrompt"), holder
+end
+local function slotReady(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    local action = prompt.ActionText:match("^%s*(.-)%s*$"):lower()
+    return prompt.ActionText == "Place" or action == "pick up"
+end
+modules.unlockSlots = {
+isComplete = function()
+    return completedUnlockPlot ~= nil and completedUnlockPlot == getMyPlot()
+end,
+invalidate = function() completedUnlockPlot = nil end,
+run = function()
+    if getCycleZone() ~= "Z4" then return "Skipped: Unlock slots runs only in Z4." end
+    local plot = getMyPlot()
+    checkPlot(plot)
+    if completedUnlockPlot == plot then return "Skipped: all holder slots are already unlocked for this plot." end
+    local reportRetry = newRetryMonitor("Unlocking all Z4 holder slots")
+    local attempts, lastAngles = {}, {}
+    local function stopAtSlot(name)
+        local reason = name .. ": still locked after five unlock attempts."
+        skipCycleUnitStages(reason)
+        return "Skipped: " .. reason .. " Stages 6-8 skipped this cycle."
+    end
+    while true do
+        checkAlive()
+        checkPlot(plot)
+        local holders = plot:FindFirstChild("Holders")
+        local slots = {}
+        for _, holder in ipairs(holders and holders:GetChildren() or {}) do
+            local number = tonumber(holder.Name:match("^M(%d+)$"))
+            if number and number >= 1 then table.insert(slots, {name = holder.Name, number = number}) end
+        end
+        table.sort(slots, function(a, b) return a.number < b.number end)
+        local target
+        for _, slot in ipairs(slots) do
+            if not slotReady(slotPrompt(plot, slot.name)) then target = slot.name; break end
+        end
+        if #slots > 0 and not target then
+            completedUnlockPlot = plot
+            reportRetry(nil, true)
+            return "Z4: all " .. #slots .. " holder slots are unlocked."
+        end
+        local name = target or "Holders"
+        if (attempts[name] or 0) >= 5 then return stopAtSlot(name) end
+        attempts[name] = (attempts[name] or 0) + 1
+        pages.unlockSlots.status.Text = "Unlocking " .. name .. "; attempt " .. attempts[name] .. "/5..."
+        local ok, unlocked = pcall(function()
+            assert(target, "Waiting for numbered holder slots.")
+            local prompt, holder = slotPrompt(plot, target)
+            if slotReady(prompt) then return true end
+            local upgrade = holder and holder:FindFirstChild("UpgradePart")
+            local character = player.Character
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            assert(root and upgrade and upgrade:IsA("BasePart"), target .. ": character or UpgradePart is unavailable.")
+            if originalRoot ~= root then originalRoot, originalCFrame = root, root.CFrame end
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then humanoid:UnequipTools() end
+            local angle = math.random(0, 359)
+            if angle == lastAngles[name] then angle = (angle + 1) % 360 end
+            lastAngles[name] = angle
+            local radians = math.rad(angle)
+            local offset = Vector3.new(math.cos(radians), 0, math.sin(radians))
+            root.CFrame = CFrame.new(upgrade.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, upgrade.Position)
+            root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+            pause(CONFIG.Units.TeleportDelay)
+            checkPlot(plot)
+            assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
+            prompt = slotPrompt(plot, target)
+            if slotReady(prompt) then return true end
+            assert(prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled
+                and (prompt.ActionText == "Unlock" or prompt.ActionText == "Unlock at the hub"),
+                target .. ": waiting for its enabled unlock prompt.")
+            heldPrompt = prompt
+            prompt:InputHoldBegin()
+            pause(2)
+            releaseInputs()
+            local deadline = os.clock() + CONFIG.General.SettleTime
+            while true do
+                checkAlive()
+                checkPlot(plot)
+                if slotReady(slotPrompt(plot, target)) then return true end
+                if os.clock() >= deadline then return false end
+                pause(CONFIG.General.WaitPoll)
+            end
+        end)
+        releaseInputs()
+        checkAlive()
+        if ok and unlocked then
+            reportRetry(nil, true)
+        else
+            reportRetry(not ok and unlocked or name .. ": still locked after its unlock prompt.")
+            -- Every failed unlock sends a fresh request, independent of cycle-end equip caching.
+            local equipped, message = pcall(function()
+                checkAlive()
+                checkPlot(plot)
+                getGameEvent():FireServer("MineEquipBest")
+                pause(CONFIG.Units.BestEquipDelay)
+            end)
+            checkAlive()
+            if not equipped then reportRetry(message) end
+            if attempts[name] >= 5 and not (target and slotReady(slotPrompt(plot, target))) then
+                return stopAtSlot(name)
+            end
+            pause(CONFIG.General.RetryInterval)
+        end
+    end
+end}
 end
 
 modules.cycleEnd = {run = function()
@@ -8027,7 +8128,6 @@ modules.cycleEnd = {run = function()
     checkPlot(getMyPlot())
     requestCycleBestEquip()
     modules.upgrades.selectZones()
-    unlockCycleHolders(getMyPlot())
 end}
 
 local function runStage(id, cacheZoneOnly)
@@ -8099,7 +8199,7 @@ startRun = function(id)
     local token = {id = id}
     runScope.current = token
     busy, activeRun, activeStage = true, id, nil
-    cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone = nil, nil
+    cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone, cycleSkipUnitsReason = nil, nil, nil
     cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady, cycleBestEquipped = nil, nil, nil, false, false
     lastRun = os.clock()
     local page = runPage(id)
@@ -8125,7 +8225,7 @@ startRun = function(id)
                     checkAlive()
                     cycle = cycle + 1
                     refreshUnitCooldown()
-                    cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone = nil, nil
+                    cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone, cycleSkipUnitsReason = nil, nil, nil
                     cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady, cycleBestEquipped = nil, nil, nil, false, false
                     resetStageRows()
                     local cycleOK, cycleError = pcall(function()
@@ -8137,8 +8237,15 @@ startRun = function(id)
                             -- Always visit Upgrades; OFF still opens the UI and scans fresh values.
                             if stage == "upgrades" then
                                 runStage(stage, not preferences.stages.upgrades)
+                            elseif stage == "unlockSlots" and preferences.stages[stage]
+                                and cycleZoneId == "Z4" and modules.unlockSlots.isComplete() then
+                                pages.unlockSlots.status.Text = "Skipped: all holder slots are already unlocked for this plot."
+                                pages.unlockSlots.status.TextColor3 = colors.muted
+                                setMasterStageState(stage, "Skipped", colors.muted)
                             elseif stage ~= "cycleEnd" and preferences.stages[stage] then
-                                runStage(stage)
+                                if not (cycleSkipUnitsReason and (stage == "units" or stage == "mutation" or stage == "upgradingUnit")) then
+                                    runStage(stage)
+                                end
                             end
                         end
                     end)
@@ -8155,20 +8262,27 @@ startRun = function(id)
                             pages[failed].status.TextColor3 = colors.error
                             setMasterStageState(failed, "Error; retry next cycle", colors.error)
                         end
-                        if failed == "units" then
-                            cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone = nil, nil
-                            for _, stage in ipairs({"mutation", "upgradingUnit"}) do
-                                if preferences.stages[stage] then
-                                    pages[stage].status.Text = "Skipped this cycle: Required Units failed."
-                                    pages[stage].status.TextColor3 = colors.muted
-                                    setMasterStageState(stage, "Skipped: stage 5 error", colors.muted)
-                                end
-                            end
+                        if failed == "units" or failed == "unlockSlots" then
+                            skipCycleUnitStages(pages[failed].name .. " failed.")
                         end
 
                         closeGamePanel("SellFrame")
                         closeGamePanel("SkillTreeFullFrame")
                         closeGamePanel("InventoryFrame")
+                        if failed == "units" and cycleZoneId == "Z4" and preferences.stages.unlockSlots
+                            and tostring(cycleError):find("waiting for its unlocked placement prompt", 1, true) then
+                            modules.unlockSlots.invalidate()
+                            local recovered, message = pcall(runStage, "unlockSlots")
+                            checkAlive()
+                            releaseInputs()
+                            restorePosition()
+                            if not recovered then
+                                logError("Unlock slots", message)
+                                pages.unlockSlots.status.Text = "Error: " .. tostring(message)
+                                pages.unlockSlots.status.TextColor3 = colors.error
+                                setMasterStageState("unlockSlots", "Error; retry next cycle", colors.error)
+                            end
+                        end
                     end
                     activeStage = nil
                     pages.master.status.Text = "Cycle " .. cycle .. (cycleBestEquipped
