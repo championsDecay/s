@@ -802,6 +802,68 @@ local function getGameEvent()
     return gameEvent
 end
 
+-- Game settings are read live on each entry; no completion file is used.
+modules.gameSettings = {apply = function(checkCurrent, status)
+    local settings = {
+        {name = "CutsceneExotic", section = "CutscenesOption", option = "Exotic", enabled = false},
+        {name = "CutsceneMythical", section = "CutscenesOption", option = "Mythical", enabled = false},
+        {name = "CutsceneMutations", section = "RevealsOption", option = "Mutations", enabled = false},
+        {name = "CutsceneSummons", section = "RevealsOption", option = "Summons", enabled = false},
+        {name = "NightMode", section = "NightModeOption", option = "Toggle", enabled = true},
+    }
+    local function check()
+        checkAlive()
+        if checkCurrent then checkCurrent() end
+    end
+    local function readState(setting)
+        local content = player:FindFirstChildOfClass("PlayerGui")
+        for _, name in ipairs({"ScreenGui", "CutGrassGame", "SettingsFrame", "List",
+            setting.section, setting.option, "Content"}) do
+            content = content and content:FindFirstChild(name)
+        end
+        local color = content and content:GetAttribute("realcolor")
+        if typeof(color) ~= "Color3" then return nil end
+        local r = math.floor(color.R * 255 + 0.5)
+        local g = math.floor(color.G * 255 + 0.5)
+        local b = math.floor(color.B * 255 + 0.5)
+        if r == 38 and g == 148 and b == 84 then return {enabled = true} end
+        if r == 80 and g == 80 and b == 80 then return {enabled = false} end
+        return nil
+    end
+    local function currentState(setting)
+        return waitUntil(function()
+            check()
+            return readState(setting)
+        end, nil, "Reading live game setting " .. setting.name .. " realcolor")
+    end
+    local event, toggled = nil, 0
+    for _, setting in ipairs(settings) do
+        check()
+        if status then status.Text = "Checking game setting: " .. setting.name end
+        local state = currentState(setting)
+        if state.enabled ~= setting.enabled then
+            event = event or getGameEvent()
+            -- Resolving the event can wait; re-read before sending a toggle.
+            state = currentState(setting)
+            if state.enabled ~= setting.enabled then
+                check()
+                if status then status.Text = "Setting " .. setting.name .. (setting.enabled and " ON" or " OFF") end
+                event:FireServer("ToggleSetting", setting.name)
+                toggled = toggled + 1
+                -- A delayed reply must not cause another toggle that undoes the first.
+                waitUntil(function()
+                    check()
+                    local confirmed = readState(setting)
+                    return confirmed and confirmed.enabled == setting.enabled
+                end, nil, "Confirming game setting " .. setting.name .. (setting.enabled and " ON" or " OFF"))
+            end
+        end
+    end
+    local summary = string.format("Game settings checked live: %d toggled; all five confirmed.", toggled)
+    if status then status.Text = summary end
+    return summary
+end}
+
 local function releaseInputs()
     local prompt, key, mouse = heldPrompt, heldKey, mouseHeld
     heldPrompt, heldKey, mouseHeld = nil, nil, nil
@@ -1294,7 +1356,7 @@ assert(({master=true, sell=true, pickaxe=true, upgrades=true, upgradingOldUnit=t
 local specs = {
     {"master", "Master", "Start Master", "Runs enabled stages in order and repeats until stopped."},
     {"sell", "Sell", "Run Auto Sell", "1. Collect the chest at your plot.\n2. Teleport to the Hub and open the sell stand.\n3. Click Select All, then Sell.\n4. Return to your plot."},
-    {"pickaxe", "Pickaxe", "Buy Best Pickaxe", "1. Open the shop, wait for it to refresh, then close it.\n2. Find the highest unlocked pickaxe.\n3. Check its saved limit and whether its buy button is green.\n4. Record and send one purchase request if eligible."},
+    {"pickaxe", "Pickaxe", "Buy Best Pickaxe", "1. Check the current zone, then open, refresh, and close the shop.\n2. Find the highest unlocked pickaxe; at the max zone, also select the second highest.\n3. Check each saved count against the same limit and require its buy button to be green.\n4. Record and send one purchase request per eligible selection."},
     {"upgrades", "Upgrades", "Run Upgrades", "1. Open the skill tree and scan the current zone.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-4 and 6-8 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
     {"upgradingOldUnit", "Upgrade Old Units", "Run Upgrade Old Units", "1. Check that current-zone Density is 0.\n2. Find displayed units matching the previous zone's required names.\n3. Upgrade Damage toward the target, starting with the lowest level.\n4. Stop when the target is reached or further upgrades are unavailable."},
     {"unlockSlots", "Unlock slots", "Run Unlock slots", "Z4 only. Try each locked slot up to five times with a random one-stud offset and a two-second hold. Stop at the first slot still locked after five attempts; skip stages 6-8 that cycle. Once all slots unlock, skip this stage on later cycles."},
@@ -1491,7 +1553,7 @@ Run enabled stages in the configured order. Each stage button can also run its s
 
 Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Startup waiting and standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state. In the first cycle, enabled automatic Workspace cleanup runs once at the start, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. Tutorial Stage 0 performs the same live check. Then enabled automatic Workspace cleanup runs once, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
@@ -1500,7 +1562,7 @@ Stop, Master OFF, unload, or the relevant shortcuts cancel active work, restore 
 MASTER CONTROLS
 Stage toggles select the repeated flow. Reset Cooldown is in Required Units. A confirmed zone change resets the unit-sequence cooldown. The zone card shows cached requirements and observed progress.
 
-Unlimited Best Pickaxe bypasses the saved limit for the highest unlocked pickaxe, while retaining request counts. Delete other plots / weather removes other plots and weather effects while enabled; rejoin to restore removed plots.
+Unlimited Best Pickaxe bypasses the saved limit for the highest unlocked pickaxe and, at the max zone, the second-highest unlocked pickaxe, while retaining separate per-ID request counts. Delete other plots / weather removes other plots and weather effects while enabled; rejoin to restore removed plots.
 
 Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+4 Events Board; Ctrl+5 Mailbox; Ctrl+6 Trial. Rolling/teleport shortcuts turn Master OFF and are ignored while typing.
 
@@ -1518,13 +1580,13 @@ CONDITIONS / STOPS
 Only act while this Sell run remains active. Click buttons only when visible and with a usable size. Missing stand parts or SellFrame stop the stage with an error. Select All and Sell controls are polled until ready or stopped; prolonged retries report the buttons found. Configured delays separate teleports, prompts, selection, and sale.]],
         pickaxe = [[ACTIONS
 1. Save pending limit edits before starting; the limit must be a whole number of zero or more.
-2. Teleport to the pickaxe stand, wait for its enabled prompt, hold it long enough to open the shop, and wait for tiles to settle. Each unconfirmed opening retry returns beside the stand with a different random one-stud horizontal offset, then reactivates the prompt if the shop is still closed. Close the shop and restore position.
-3. Scan stable tile identities/colors. Tile IDs start at 2 in child order. Choose the highest unlocked ID, including an unlocked tile that is currently sold out or unaffordable.
-4. Load this account/game's saved per-ID request counts. Check the saved limit unless Unlimited Best Pickaxe is ON.
-5. Require the chosen tile to remain present and buyable (green). Reserve one count, save it, read it back to verify, recheck the tile, and send one purchase request.
+2. Freshly check the current zone, then teleport to the pickaxe stand, wait for its enabled prompt, hold it long enough to open the shop, and wait for tiles to settle. Each unconfirmed opening retry returns beside the stand with a different random one-stud horizontal offset, then reactivates the prompt if the shop is still closed. Close the shop and restore position.
+3. Scan stable tile identities/colors. Tile IDs start at 2 in child order. Choose the highest unlocked ID and, only in the highest configured zone, the second-highest unlocked ID. Sold-out or unaffordable unlocked tiles still count toward rank; locked tiles do not.
+4. Load this account/game's saved per-ID request counts. Both selected IDs use the same saved limit and Unlimited Best Pickaxe setting, with separate request counts.
+5. Process each selected ID independently, best first. Require its tile to remain present and buyable (green). Reserve one count, save it, read it back to verify, recheck the tile, and send one purchase request per eligible ID.
 
 CONDITIONS / STOPS
-No lower-ID fallback is purchased when the highest unlocked tile is unavailable. No request is sent if the limit is reached or the selected tile is not buyable. Unlimited mode bypasses the limit only; requests are still counted.
+Outside the max zone, only the highest unlocked ID is considered. At the max zone, independently consider the two highest unlocked IDs even if one is capped or unavailable; do not fall back to a third ID. No request is sent for a selected ID if its limit is reached or its tile is not buyable. Unlimited mode bypasses the limit only; requests are still counted.
 
 Unavailable file functions, invalid or unreadable count data, a disappearing previously seen file, or unverifiable saves stop purchases. A count saved before a later cancellation or color change remains reserved. Counts represent reserved requests, rather than confirmed inventory purchases.
 
@@ -3467,7 +3529,7 @@ local status = stageStatus("pickaxe")
 local panel = pages.pickaxe.frame
 local DEFAULT_MAX_PICKAXES = CONFIG.Pickaxe.DefaultMaxPerID
 local maxPickaxes = DEFAULT_MAX_PICKAXES
-local unlimitedPickaxeId = nil
+local unlimitedPickaxeIds = {}
 local countFile = string.format("pickaxe_counts_%s_%s.json", tostring(game.GameId), tostring(player.UserId))
 local countFileSeen = false
 local countStorageError = nil
@@ -3568,7 +3630,7 @@ connect(unlimitedToggle.Activated, function()
     end
 end)
 refreshUnlimitedToggle(false)
-local unlimitedHint = masterLayout.text(masterLayout.zone, "Highest unlocked; purchase counts still saved.", 10)
+local unlimitedHint = masterLayout.text(masterLayout.zone, "Best; also second-best at max zone. Counts still saved.", 10)
 unlimitedHint.Name = "UnlimitedBestPickaxeHint"
 
 local maxLabel = Instance.new("TextLabel")
@@ -3650,7 +3712,7 @@ refreshCountsUI = function(data)
     end)
     for index, id in ipairs(ids) do
         local count = data.requestCounts[id]
-        local unlimited = CONFIG.Pickaxe.UnlimitedBestPickaxe and tonumber(id) == unlimitedPickaxeId
+        local unlimited = CONFIG.Pickaxe.UnlimitedBestPickaxe and unlimitedPickaxeIds[tonumber(id)] == true
         local text = unlimited and string.format("ID: %s (%d; unlimited)", id, count)
             or string.format("ID: %s (%d/%d)", id, count, data.maxPickaxes)
         addCountRow(text, index, not unlimited and count >= data.maxPickaxes)
@@ -3704,6 +3766,7 @@ local function scanBestPickaxe(list)
         local ready = true
         local bestId = nil
         local bestTile = nil
+        local secondId, secondTile
         local id = 2
         for index = 1, #children do
             local tile = children[index]
@@ -3716,6 +3779,7 @@ local function scanBestPickaxe(list)
                     problem = string.format("Pickaxe ID %d: %s", id, reason)
                 elseif isAvailable(state) then
 
+                    secondId, secondTile = bestId, bestTile
                     bestId = id
                     bestTile = tile
                 end
@@ -3749,7 +3813,7 @@ local function scanBestPickaxe(list)
 
                 end
                 reportRetry(nil, true)
-                return bestId, bestTile
+                return bestId, bestTile, secondId, secondTile
             end
             problem = "Pickaxe tiles or colors are still changing."
         else
@@ -3983,52 +4047,68 @@ modules.pickaxe = {
     cleanupWaiting = cleanupWaitingShop,
     isWaiting = function() return waitingAtPickaxeShop end,
     run = function()
+        status.Text = "Checking the current zone for pickaxe purchases..."
+        -- Pickaxe runs before Upgrades, so check the live zone instead of last cycle's cache.
+        local opened = openUpgrades()
+        local _, zoneId = waitForZone()
+        local atMaxZone = modules.upgrades.isMaxZone(zoneId)
+        if opened then closeSkillTree() end
         refreshPickaxeShop()
 
-            local event = getGameEvent()
-            if not event:IsA("RemoteEvent") then
-                error("Remotes.GamestateEvent is not a RemoteEvent.", 0)
-            end
-            local list = path(playerGui, {"MineGui", "PickaxeShopFrame", "List"})
-            status.Text = "Finding the highest available pickaxe ID..."
-            local id, tile = scanBestPickaxe(list)
-            unlimitedPickaxeId = id
-            if not alive then return "Unloaded." end
-            if not id then
-                return "Cannot buy the best pickaxe at the moment."
-            end
+        local event = getGameEvent()
+        if not event:IsA("RemoteEvent") then
+            error("Remotes.GamestateEvent is not a RemoteEvent.", 0)
+        end
+        local list = path(playerGui, {"MineGui", "PickaxeShopFrame", "List"})
+        status.Text = "Finding the highest unlocked pickaxes..."
+        local id, tile, secondId, secondTile = scanBestPickaxe(list)
+        unlimitedPickaxeIds = {}
+        if not alive then return "Unloaded." end
+        if not id then return "Cannot buy the best pickaxe at the moment." end
 
+        local choices = {{id = id, tile = tile}}
+        unlimitedPickaxeIds[id] = true
+        if atMaxZone and secondId then
+            table.insert(choices, {id = secondId, tile = secondTile})
+            unlimitedPickaxeIds[secondId] = true
+        end
+        local unlimited = CONFIG.Pickaxe.UnlimitedBestPickaxe
+        local results = {}
+        local function buySelected(choice)
+            local selectedId, selectedTile = choice.id, choice.tile
             local data = readPickaxeCounts()
             maxPickaxes = data.maxPickaxes
             maxInput.Text = tostring(maxPickaxes)
             refreshCountsUI(data)
-            local savedCount = data.requestCounts[string.format("%.0f", id)] or 0
-            if not CONFIG.Pickaxe.UnlimitedBestPickaxe and savedCount >= maxPickaxes then
-                return string.format("Pickaxe ID %d: limit reached (%d/%d).", id, savedCount, maxPickaxes)
+            local savedCount = data.requestCounts[string.format("%.0f", selectedId)] or 0
+            if not unlimited and savedCount >= maxPickaxes then
+                return string.format("Pickaxe ID %d: limit reached (%d/%d).", selectedId, savedCount, maxPickaxes)
             end
-            local selectedState = tileState(tile)
-            if tile.Parent ~= list or selectedState ~= "buyable" then
-                return "Cannot buy the best pickaxe at the moment."
+            if selectedTile.Parent ~= list or tileState(selectedTile) ~= "buyable" then
+                return string.format("Pickaxe ID %d: unavailable; no request sent.", selectedId)
             end
 
-            local count, limitCount, limit = reservePickaxe(id, CONFIG.Pickaxe.UnlimitedBestPickaxe)
+            local count, limitCount, limit = reservePickaxe(selectedId, unlimited)
             maxInput.Text = tostring(limit)
             if not count then
-                return string.format("Pickaxe ID %d: limit reached (%d/%d).", id, limitCount, limit)
+                return string.format("Pickaxe ID %d: limit reached (%d/%d).", selectedId, limitCount, limit)
             end
-
             if not alive then return "Unloaded; saved slot retained." end
-
-            if tile.Parent ~= list or tileState(tile) ~= "buyable" then
-                return "Cannot buy the best pickaxe at the moment."
+            if selectedTile.Parent ~= list or tileState(selectedTile) ~= "buyable" then
+                return string.format("Pickaxe ID %d: unavailable; saved slot retained.", selectedId)
             end
             checkAlive()
-            event:FireServer("MineBuyPickaxe", id)
-
-            if CONFIG.Pickaxe.UnlimitedBestPickaxe then
-                return string.format("ID %d: request sent. Saved %d requests; best-pickaxe buy limit disabled.", id, count)
+            event:FireServer("MineBuyPickaxe", selectedId)
+            if unlimited then
+                return string.format("ID %d: request sent. Saved %d requests; buy limit disabled.", selectedId, count)
             end
-            return string.format("ID %d: request sent. Saved %d/%d.", id, count, limit)
+            return string.format("ID %d: request sent. Saved %d/%d.", selectedId, count, limit)
+        end
+        for _, choice in ipairs(choices) do
+            checkAlive()
+            table.insert(results, buySelected(choice))
+        end
+        return table.concat(results, " ")
     end,
     prepare = function()
         if maxInput.Text ~= tostring(maxPickaxes) then return applyMaxInput() end
@@ -4572,7 +4652,7 @@ connect(selectNext.Activated, function()
     refreshZoneToggles(false)
 end)
 refreshZoneToggles(false)
-modules.upgrades = {setBusy = refreshZoneToggles, getDensity = function()
+modules.upgrades = {isMaxZone = isMaxZone, setBusy = refreshZoneToggles, getDensity = function()
 
     getCycleZone()
     assert(cycleDensityLevel ~= nil, "Density cache is missing.")
@@ -7607,57 +7687,7 @@ local function selectHotbarUnit(slot)
 end
 local actions = {}
 actions[0] = function()
-    assert(type(isfile) == "function" and type(readfile) == "function" and type(writefile) == "function",
-        "Stage 0 needs isfile/readfile/writefile to save completion")
-    local http = game:GetService("HttpService")
-    -- Executor workspace file, separate for each Roblox account. This file is
-    -- created by Stage 0 at runtime, never pre-marked complete by the installer.
-    local filename = "MineStageBrowser_Stage0_" .. tostring(player.UserId) .. ".json"
-    local settingNames = {"CutsceneMythical", "CutsceneExotic", "CutsceneSummons", "CutsceneMutations", "NightMode"}
-    local state = {version = 1, userId = player.UserId, done = false, sent = {}}
-    if isfile(filename) then
-        local ok, saved = pcall(function() return http:JSONDecode(readfile(filename)) end)
-        assert(ok and type(saved) == "table" and saved.version == 1 and saved.userId == player.UserId
-            and type(saved.done) == "boolean" and type(saved.sent) == "table",
-            "Stage 0 save is unreadable or invalid: " .. filename .. "; no toggles were sent")
-        state = saved
-    end
-    local allSent = true
-    for _, name in ipairs(settingNames) do
-        assert(state.sent[name] == nil or type(state.sent[name]) == "boolean", "Invalid Stage 0 saved setting: " .. name)
-        if state.sent[name] ~= true then allSent = false end
-    end
-    local function save()
-        local encoded = http:JSONEncode(state)
-        writefile(filename, encoded)
-        assert(readfile(filename) == encoded, "Stage 0 save verification failed: " .. filename)
-    end
-    assert(not state.done or allSent, "Stage 0 save has inconsistent completion data: " .. filename)
-    if allSent then
-        if not state.done then state.done = true; save() end
-        flowStatus.Text = "Stage 0 already completed (saved); skipping"
-        return
-    end
-    -- Verify saving works before sending any toggle. Partial progress is saved
-    -- after each request so Stop/relaunch resumes without reversing prior ones.
-    save()
-    local event = waitFor("Stage 0: waiting for Remotes.GamestateEvent", function()
-        return path(game:GetService("ReplicatedStorage"), {"Remotes", "GamestateEvent"})
-    end)
-    assert(event:IsA("RemoteEvent"), "GamestateEvent is not a RemoteEvent")
-    for index, name in ipairs(settingNames) do
-        checkFlow()
-        if not state.sent[name] then
-            flowStatus.Text = "Stage 0: requesting " .. name .. " (" .. index .. "/5)"
-            event:FireServer("ToggleSetting", name)
-            state.sent[name] = true
-            save()
-            pause(0.25)
-        end
-    end
-    state.done = true
-    save()
-    flowStatus.Text = "Stage 0 completed and saved"
+    modules.gameSettings.apply(checkFlow, flowStatus)
 end
 local function tutorialChestCloseTarget()
     local frame = ui("ChestFrame")
@@ -8124,7 +8154,7 @@ modules.tutorial = {
             checkFlow()
             if id ~= 1 and id ~= 4 then pause(0.3) end
         end
-        return "Tutorial stages 0–7 completed. Stage 0 settings are saved."
+        return "Tutorial stages 0–7 completed. Game settings were checked live."
     end,
 }
 end)()
@@ -8447,6 +8477,7 @@ startRun = function(id)
                     resetStageRows()
                     local cycleOK, cycleError = pcall(function()
                         if cycle == 1 then
+                            modules.gameSettings.apply(nil, pages.master.status)
                             modules.workspaceCleanup.onCycleStart(cycle)
                         end
                         modules.dailyRewards.runCycle()
