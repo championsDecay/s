@@ -5165,7 +5165,6 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
     if densityLevel == 0 then return skipPlacement("density level is 0.") end
     if required == 0 then return skipPlacement("RequiredUnitCount is zero; no required pads to fill.") end
     local placed, batches = 0, 0
-    local reportRetry = newRetryMonitor("Filling empty unlocked pads through hotbar 1")
     local function finish(displayed, detail)
         closeRequiredInventory()
         unitCountSnapshot = {zone = zoneId, summary = displayed}
@@ -5179,10 +5178,9 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
         checkAlive()
         checkPlot(plot)
         local empty, displayed, problem = requiredPlacementState(plot, zoneId)
-        if empty then reportRetry(nil, true) end
         if not empty then
-            reportRetry(problem)
-            pause(CONFIG.General.RetryInterval)
+            -- Abort this stage so Master skips stages 5-7 and reaches cycle-end unlocking.
+            error(problem or "Required holder placement prompts are unavailable.", 0)
         elseif #empty == 0 then
             return finish(displayed, "all unlocked pads filled.")
         else
@@ -8156,6 +8154,16 @@ startRun = function(id)
                             pages[failed].status.Text = "Error: " .. tostring(cycleError)
                             pages[failed].status.TextColor3 = colors.error
                             setMasterStageState(failed, "Error; retry next cycle", colors.error)
+                        end
+                        if failed == "units" then
+                            cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone = nil, nil
+                            for _, stage in ipairs({"mutation", "upgradingUnit"}) do
+                                if preferences.stages[stage] then
+                                    pages[stage].status.Text = "Skipped this cycle: Required Units failed."
+                                    pages[stage].status.TextColor3 = colors.muted
+                                    setMasterStageState(stage, "Skipped: stage 5 error", colors.muted)
+                                end
+                            end
                         end
 
                         closeGamePanel("SellFrame")
