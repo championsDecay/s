@@ -827,7 +827,7 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "AutomationUI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
-gui.DisplayOrder = 2147483647
+gui.DisplayOrder = 2147483647 -- Set once at startup; do not monitor other interfaces.
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
 local function cleanup(destroyGui)
@@ -8210,23 +8210,6 @@ do
         if pcall(function() gui.Parent = parent end) then break end
     end
 
-    local uiParent = gui.Parent
-    local watched = setmetatable({}, {__mode = "k"})
-    local function watch(other)
-        if other == gui or not other:IsA("ScreenGui") or watched[other] then return end
-        watched[other] = true
-        local function bringToFront()
-            if alive and gui.Parent == uiParent and other:IsDescendantOf(uiParent)
-                and other.DisplayOrder >= gui.DisplayOrder then
-                gui.Parent = nil
-                gui.Parent = uiParent
-            end
-        end
-        connect(other:GetPropertyChangedSignal("DisplayOrder"), bringToFront)
-        bringToFront()
-    end
-    connect(uiParent.DescendantAdded, watch)
-    for _, other in ipairs(uiParent:GetDescendants()) do watch(other) end
 end
 resize()
 modules.workspaceCleanup.refresh()
