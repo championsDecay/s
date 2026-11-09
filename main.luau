@@ -4536,6 +4536,8 @@ local function mutationStoppedByDensityII(zoneId)
 end
 
 do
+-- Separate setup scopes avoid exhausting the main chunk's registers on mobile compilers.
+(function()
 local status = stageStatus("units")
 
 local FinalEquipMode = CONFIG.Units.FinalEquipMode
@@ -5419,6 +5421,7 @@ local function runRequiredUnits()
 end
 
 modules.units = {run = runRequiredUnits}
+end)()
 end
 
 do
@@ -7089,6 +7092,8 @@ end}
 end
 
 do
+-- Keep tutorial setup within its own compiler register budget as well.
+(function()
 local CLICK_RANGE = 5
 local TELEPORT_OFFSET = Vector3.new(0, 2, 2)
 local plots = workspace:WaitForChild("MineWorld"):WaitForChild("Plots")
@@ -8030,6 +8035,7 @@ modules.tutorial = {
         return "Tutorial stages 0–7 completed. Stage 0 settings are saved."
     end,
 }
+end)()
 end
 
 local function runPage(id)
