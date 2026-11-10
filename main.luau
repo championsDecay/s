@@ -11,7 +11,6 @@ local CONFIG = {
         RetryInterval = 1,
         SettleTime = 0.75,
         StartupTeleportClickInterval = 1,
-        StartupCollectDelay = 0.5,
         StartupTeleportMinDistance = 10,
         ScanPoll = 0.1,
         WaitPoll = 0.05,
@@ -53,7 +52,7 @@ local CONFIG = {
         ShopTimeout = math.huge,
         ShopDelay = 0.3,
         SelectAllDelay = 0.6,
-        SellDelay = 1.2,
+        SellDelay = 1,
         ClickDelay = 0.03,
         Poll = 0.02,
         StandDistance = 8,
@@ -258,9 +257,9 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Platinum = 5,
+                    Platinum = 4,
                     Rainbow = 0,
-                    Frozen = 3,
+                    Frozen = 4,
                     Inferno = 0,
                     Nightmare = 0,
                     Unreal = 0,
@@ -273,9 +272,9 @@ local CONFIG = {
                 MaxLevelCap = 40,
                 DamageBatchSize = 5, -- Damage upgrades per unit before reselecting.
                 RequiredMutations = {
-                    Platinum = 5,
+                    Platinum = 4,
                     Rainbow = 0,
-                    Frozen = 3,
+                    Frozen = 4,
                     Inferno = 0,
                     Nightmare = 0,
                     Unreal = 0,
@@ -949,6 +948,7 @@ local function cleanup(destroyGui)
     if not alive then return end
     logging.flush()
     if modules.idleClick then modules.idleClick.stop() end
+    if modules.gameReady then pcall(modules.gameReady.cleanup) end
     if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current, minimizedActions.rollToken, minimizedActions.openToken = nil, nil, nil
     alive, busy, dragging = false, false, false
@@ -1554,7 +1554,7 @@ Run enabled stages in the configured order. Each stage button can also run its s
 
 Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Startup waiting and standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state and read the current zone from your ZoneBoard before settings, rewards, or stages. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. Tutorial Stage 0 performs the same live check. Then enabled automatic Workspace cleanup runs once, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+At the very start of the first Master cycle, enable EventsFrameV2.Visible once per second until its Milestones.M1.Visible is true, then close EventsFrameV2. Do not run this loading check in later cycles. After loading, start fly and plot cleanup, then start each cycle with fresh cycle state and read the current zone from your ZoneBoard before settings, rewards, or stages. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. Tutorial Stage 0 performs the same live check. Then enabled automatic Workspace cleanup runs once, after Events milestone loading is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
@@ -1570,11 +1570,11 @@ Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+
 HOTBAR UPGRADES
 Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Place each selected copy, check its identity, upgrade Damage toward the configured target and Speed/Mining to their available maxima, then pick it up before the next copy. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
         sell = [[ACTIONS
-1. Startup clicks OfflineFrame.Content.CollectButton when the offline popup is visible, waits 0.5 seconds, then clicks TeleportButton. Each click is observed for up to one second; attempts continue until the same character moves more than 10 studs after a teleport click. A hidden or absent offline popup does not block retries. A missing/hidden TeleportButton or a click without confirmed movement triggers chest recovery. Hover during recovery and alternate chest prompt attempts with fresh TeleportButton attempts. Each chest attempt uses a different one-stud horizontal offset above the chest, within prompt range. Missing prompts or unsafe positions do not block the next button attempt. Observe button movement before any further chest repositioning; chest movement never confirms a teleport. A confirmed button teleport exits recovery without restoring the old position. Release recovery hover on exit, Stop, unload, or character changes.
-2. Teleport to your plot, wait, and collect the plot chest.
+1. The first Master cycle confirms loading through EventsFrameV2 and Milestones.M1 before running stages. Standalone Sell does not run this loading check.
+2. Teleport to your plot, wait, open ChestFrame with Visible=true, collect the plot chest, and close it with Visible=false.
 3. Teleport to the Hub. Move in front of the sell stand, face the camera toward it, and activate its prompts.
 4. Hold the enabled sell prompt for its required duration, then wait for the game to open the sell window with visible ancestors. Each failed window retry returns the current character to a different random point exactly one horizontal stud from the usual stand position, stops residual movement, faces the stand, and activates its prompt again. Repeat until the window appears or the run is stopped.
-5. Wait for a visible, active Select All button with a usable size, checking its name, text, or child caption. Click it once, wait, then wait for and click the separate Sell button. Wait for the sale, teleport back to your plot, and wait again.
+5. Wait for a visible, active Select All button with a usable size, checking its name, text, or child caption. Click it once, wait, then wait for and click the separate Sell button. Wait one second after Sell, then click SellFrame.Close once per second while SellFrame.Visible remains true. Return to your plot only after the frame closes.
 6. Master closes the sell window after this stage.
 
 CONDITIONS / STOPS
@@ -1596,7 +1596,7 @@ During the cycle delay, open the shop and click visible buy buttons on rows with
         upgrades = [[ZONE / DENSITY SCAN
 Read all of your owned plot's ZoneBoard rows in numeric order. ZoneRowN means ZN. Button.Lock.Visible true means locked; false means unlocked. The highest numbered row with its lock hidden is the current zone. Retry missing rows or Lock objects until stable. Set MineGui.SkillTreeFullFrame.Visible to true, then wait for Tree.Canvas and the matching Zone_ZN folder to read Density and Colossus data. The zone still comes from the ZoneBoard. Set Visible to false when finished. Cache the zone ID, folder name, and confirmed Density for the cycle. A changed zone clears the unit-sequence cooldown. The maximum configured zone is the highest numeric Z key in RequiredByZone, with no fixed zone-number limit.
 
-If the Upgrades button is missing, hidden, or inactive, teleport above your plot chest, open and close it without taking its contents, restore your position, and retry the button. Stop cancels recovery; prolonged failures use the normal throttled retry logs.
+Open and close SkillTreeFullFrame through its Visible property. Main automation does not use chest recovery; the tutorial retains its own behavior.
 
 Density is the highest green/upgraded Density node. Unknown node colors or an unsettled/missing tree are retried until ready or stopped; prolonged retries log errors. Confirmed Density 2+ stops mutation for that zone; a later confirmed lower Density clears a stale stop flag. Hide and save the tutorial button at Z2+ or at Z1 with Density 1+.
 
@@ -1634,7 +1634,7 @@ Skip if no displayed unit matches. Stop a unit at the target or when Damage is u
 Require Density 1 or higher in Z1-Z11, or Density 0 or higher in Z12 and above. Check the shared unit-sequence cooldown before refreshing anything. If active, keep displayed units and skip. Reset Cooldown clears it; a new zone resets it. Validate the equipment mode, use cached zone/Density, check plot ownership, and start the sequence cooldown.
 
 AVAILABILITY CHECK
-Clear occupied hotbar assignments, open inventory, and count current-zone whitelisted copies directly from inventory, including stack quantities. At Density 2+, require a nonempty animation tag; Density 0-1 accepts either. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is below the current zone minimum, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
+Clear occupied hotbar assignments, open InventoryFrame with Visible=true, and count current-zone whitelisted copies directly from inventory, including stack quantities. Close inventory with Visible=false. At Density 2+, require a nonempty animation tag; Density 0-1 accepts either. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is below the current zone minimum, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
 
 REPLACEMENT / PLACEMENT
 Once eligible, require a ready character, close panels, and remove all displayed units with confirmed pickup retries. Clear occupied hotbar assignments again, open inventory, and recheck available matching copies plus units already placed in required pads.
@@ -2313,15 +2313,7 @@ local function closeUnitPanel(operation, checkCurrent)
                 local currentMine = playerGui:FindFirstChild("MineGui")
                 local currentFocus = currentMine and currentMine:FindFirstChild("SlotFocusFrame")
                 if visible(currentFocus) then
-                    local recovered, recoveryMessage = pcall(recoverUnitPanelThroughChest, checkCurrent)
-                    checkAlive()
-                    if checkCurrent then checkCurrent() end
-                    currentMine = playerGui:FindFirstChild("MineGui")
-                    currentFocus = currentMine and currentMine:FindFirstChild("SlotFocusFrame")
-                    if visible(currentFocus) or not recovered then
-                        reportRetry(not recovered and recoveryMessage or (not ok and message)
-                            or ("Tried " .. method .. " and chest recovery; unit panel is still visible."))
-                    end
+                    reportRetry(not ok and message or ("Tried " .. method .. "; unit panel is still visible."))
                 end
                 nextAttempt = os.clock() + CONFIG.General.RetryInterval
             end
@@ -2330,143 +2322,59 @@ local function closeUnitPanel(operation, checkCurrent)
     end
 end
 
--- Collect visible offline rewards before each startup teleport attempt.
--- Only movement after TeleportButton is clicked confirms startup readiness.
+-- Master checks loading only at the beginning of its first cycle.
 do
-    local startupReady = false
+    local openedEventsFrame
+    local function closeLoadingEvents()
+        local frame = openedEventsFrame
+        openedEventsFrame = nil
+        if frame then pcall(function() frame.Visible = false end) end
+    end
     modules.gameReady = {
-        isReady = function() return startupReady end,
+        cleanup = closeLoadingEvents,
         wait = function()
-            if startupReady then return true end
+            closeLoadingEvents()
             local nextAttempt = 0
-            local reportRetry = newRetryMonitor("Startup collection and teleport")
-            local pendingCharacter, pendingRoot, pendingPosition
-            local teleportFailed = false
-            local lastMessage
-            local function movedAfterClick()
-                return pendingPosition and player.Character == pendingCharacter
-                    and pendingRoot.Parent == pendingCharacter
-                    and pendingRoot:IsDescendantOf(workspace)
-                    and (pendingRoot.Position - pendingPosition).Magnitude > CONFIG.General.StartupTeleportMinDistance
-            end
-            local function confirmTeleport()
-                reportRetry(nil, true)
-                startupReady = true
-                logInfo("Startup", "TeleportButton changed character position; starting automation.")
-                return true
-            end
-            local attemptTeleport
-            local function recoverTeleportUi()
-                -- Discard the failed click's baseline before moving to the chest.
-                -- Recovery movement must never confirm a TeleportButton click.
-                pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
-                pages.master.status.Text = "TeleportButton unavailable/unresponsive; refreshing the UI through your chest..."
-                footer.Text = pages.master.status.Text
-                local ok, result = pcall(recoverUnitPanelThroughChest, nil, "TeleportButton recovery", function()
-                    -- This observation window contains no chest repositioning or restoration.
-                    pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
-                    local clicked, message = pcall(attemptTeleport)
-                    if clicked then
-                        local deadline = os.clock() + CONFIG.General.StartupTeleportClickInterval
-                        repeat
-                            checkAlive()
-                            if movedAfterClick() then return true end
-                            if os.clock() >= deadline then break end
-                            task.wait(CONFIG.General.WaitPoll)
-                        until false
-                    end
-                    -- Discard failed button baselines before the next one-stud chest offset.
-                    pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
-                    return false, clicked and "TeleportButton has not moved your character during recovery." or tostring(message)
-                end)
-                if not ok and alive then reportRetry("TeleportButton chest recovery: " .. tostring(result)) end
-                return ok and result == true and movedAfterClick()
-            end
-            attemptTeleport = function()
-                teleportFailed = false
+            local reportRetry = newRetryMonitor("Waiting for Events milestone M1 to load")
+            pages.master.status.Text = "Waiting for Events milestone M1 to become visible..."
+            footer.Text = pages.master.status.Text
+            while true do
+                checkAlive()
                 local currentGui = player:FindFirstChildOfClass("PlayerGui")
                 if currentGui then playerGui = currentGui end
                 local mine = currentGui and currentGui:FindFirstChild("MineGui")
-                local offline = mine and mine:FindFirstChild("OfflineFrame")
-                if offline and visible(offline) then
-                    local content = offline:FindFirstChild("Content")
-                    local collect = content and content:FindFirstChild("CollectButton")
-                    assert(collect, "Offline CollectButton is not available yet.")
-                    clickButton(collect)
-                end
-                -- A dismissed/absent offline popup must not prevent further teleport retries.
-                task.wait(CONFIG.General.StartupCollectDelay)
-                checkAlive()
-                if movedAfterClick() then return true end
-                -- Capture the position AFTER collection and immediately BEFORE teleporting.
-                currentGui = player:FindFirstChildOfClass("PlayerGui")
-                if currentGui then playerGui = currentGui end
-                mine = currentGui and currentGui:FindFirstChild("MineGui")
-                local teleport = mine and mine:FindFirstChild("TeleportButton")
-                local character = player.Character
-                local root = character and character:FindFirstChild("HumanoidRootPart")
-                assert(root and root:IsA("BasePart") and root:IsDescendantOf(workspace), "Character position is not available yet.")
-                teleportFailed = true
-                assert(teleport, "TeleportButton is not available yet.")
-                local before = root.Position
-                clickButton(teleport)
-                teleportFailed = false
-                checkAlive()
-                if player.Character == character and root.Parent == character then
-                    pendingCharacter, pendingRoot, pendingPosition = character, root, before
-                    nextAttempt = os.clock() + CONFIG.General.StartupTeleportClickInterval
-                    return movedAfterClick()
-                end
-                pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
-                return false
-            end
-            while alive do
-                checkAlive()
-                local character = player.Character
-                local root = character and character:FindFirstChild("HumanoidRootPart")
-                if character ~= pendingCharacter or root ~= pendingRoot then
-                    pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
-                end
-                if movedAfterClick() then return confirmTeleport() end
+                local frame = mine and mine:FindFirstChild("EventsFrameV2")
+                if frame and not frame:IsA("GuiObject") then frame = nil end
                 if os.clock() >= nextAttempt then
-                    if pendingPosition then
-                        if recoverTeleportUi() then return confirmTeleport() end
-                        if not alive then return false end
+                    nextAttempt = os.clock() + 1
+                    if frame then
+                        if openedEventsFrame ~= frame then closeLoadingEvents() end
+                        openedEventsFrame = frame
+                        frame.Visible = true
                     end
-                    nextAttempt = os.clock() + CONFIG.General.StartupTeleportClickInterval
-                    pages.master.status.Text = "Collecting offline rewards, then teleporting after 0.5 seconds..."
-                    footer.Text = pages.master.status.Text
-                    pages.master.run.Text = preferences.masterEnabled and "Cancel Master (waiting for teleport)" or pages.master.runText
-                    minimizedMaster.Text = preferences.masterEnabled and "Master: Waiting" or "Master: OFF"
-                    local ok, result = pcall(attemptTeleport)
-                    if not alive then return false end
-                    if ok and result then return confirmTeleport() end
-                    local message
-                    if ok then
-                        message = "TeleportButton has not moved your character; retrying with chest UI recovery."
-                    else
-                        pendingCharacter, pendingRoot, pendingPosition = nil, nil, nil
-                        if teleportFailed then
-                            if recoverTeleportUi() then return confirmTeleport() end
-                            if not alive then return false end
-                        end
-                        message = "Startup retry: " .. tostring(result)
-                    end
-                    if message ~= lastMessage then
-                        logInfo("Startup", message)
-                        lastMessage = message
-                    end
-                    reportRetry(message)
-                    pages.master.status.Text = message
-                    footer.Text = message
                 end
-                task.wait(CONFIG.General.ScanPoll)
+                if frame and frame == openedEventsFrame and frame.Visible then
+                    local milestone = frame
+                    for _, name in ipairs({"Safe", "Body", "Main", "Pages", "Milestones", "M1"}) do
+                        milestone = milestone and milestone:FindFirstChild(name)
+                    end
+                    -- Read the requested Visible property without changing the milestone.
+                    if milestone and milestone:IsA("GuiObject") and milestone.Visible then
+                        checkAlive()
+                        closeLoadingEvents()
+                        reportRetry(nil, true)
+                        logInfo("Startup", "Events milestone M1 is visible; game loaded.")
+                        return true
+                    end
+                    reportRetry("EventsFrameV2 is visible; waiting for Milestones.M1.Visible.")
+                else
+                    reportRetry("Waiting for EventsFrameV2; enabling it once per second.")
+                end
+                pause(CONFIG.General.WaitPoll)
             end
-            return false
         end,
     }
 end
-
 
 do
     local hotkeyActions = {[Enum.KeyCode.One] = minimizedActions.toggleMaster}
@@ -2611,22 +2519,22 @@ do
                 checkAlive()
                 inventory = path(playerGui, {"MineGui", "InventoryFrame"})
                 if not visible(inventory) then
-                    clickButton(path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", "InventoryButton"}))
+                    inventory.Visible = true
                     openedInventory = true
                 end
                 waitUntil(function() return visible(inventory) end,
                     CONFIG.Units.ActionTimeout, "Waiting for inventory to open for crate counting.", function()
-                        clickButton(path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", "InventoryButton"}))
+                        inventory.Visible = true
                     end)
                 pause(CONFIG.Units.UISettleTime)
                 local count = waitUntil(function()
                     if not visible(inventory) then error("Inventory closed before Petalfall Crates could be counted.", 0) end
                     return readPetalfallCrateCount(path(inventory, {"Content", "Scroll"}))
                 end, CONFIG.Units.ActionTimeout, "Petalfall Crate count did not finish loading.")
-                clickButton(path(inventory, {"Content", "Actions", "Close"}))
+                inventory.Visible = false
                 waitUntil(function() return not visible(inventory) end,
                     CONFIG.Units.ActionTimeout, "Waiting for inventory to close before opening crates.", function()
-                        clickButton(path(inventory, {"Content", "Actions", "Close"}))
+                        inventory.Visible = false
                     end)
                 openedInventory = false
                 if count == 0 then return "No Petalfall Crates found." end
@@ -2641,7 +2549,7 @@ do
             end)
             if not actionIsCurrent(token) then return end
             if openedInventory and inventory and visible(inventory) then
-                pcall(function() clickButton(path(inventory, {"Content", "Actions", "Close"})) end)
+                pcall(function() inventory.Visible = false end)
                 if not actionIsCurrent(token) then return end
             end
             minimizedActions.openBusy, minimizedActions.openToken, minimizedActions.openWorker = false, nil, nil
@@ -2725,7 +2633,7 @@ do
     }
 end
 
--- Automatic Workspace cleanup runs once at the start of the first Master cycle, after startup teleport confirmation.
+-- Automatic Workspace cleanup runs once at the start of the first Master cycle, after Events milestone loading confirmation.
 -- It never polls or retries automatically; Run once remains a separate manual pass.
 -- Other MinePlots/weather use the independent automatic plotCleanup worker above.
 do
@@ -3416,7 +3324,11 @@ local function doSellOnce()
     GameEvent:FireServer("MineTeleport", "Plot")
     if not sleepSell(CONFIG.Sell.TeleportDelay) then return end
     checkAlive()
-    GameEvent:FireServer("MineTakeChest")
+    local chestFrame = path(playerGui, {"MineGui", "ChestFrame"})
+    chestFrame.Visible = true
+    local collected, collectionError = pcall(function() GameEvent:FireServer("MineTakeChest") end)
+    chestFrame.Visible = false
+    if not collected then error(collectionError, 0) end
     if not sleepSell(CONFIG.Sell.ChestDelay) then return end
     status.Text = "Going to the sell stand..."
     checkAlive()
@@ -3498,6 +3410,27 @@ local function doSellOnce()
     if not sellIsActive() then return end
     if not sb or not clickBtn(sb) then error("Sell button became unavailable before clicking.", 0) end
     if not sleepSell(CONFIG.Sell.SellDelay) then return end
+    local nextCloseAt = 0
+    local reportClose = newRetryMonitor("Closing SellFrame after selling")
+    while sellIsActive() do
+        local currentGui = playerGui:FindFirstChild("MineGui")
+        local currentFrame = currentGui and currentGui:FindFirstChild("SellFrame")
+        if not currentFrame or not currentFrame.Visible then
+            reportClose(nil, true)
+            break
+        end
+        if os.clock() >= nextCloseAt then
+            nextCloseAt = os.clock() + 1
+            status.Text = "Waiting for the sell window to close..."
+            local close = currentFrame:FindFirstChild("Close")
+            local ok, clicked = pcall(clickBtn, close)
+            if not ok or not clicked then
+                reportClose(not ok and clicked or "Waiting for SellFrame.Close to be clickable.")
+            end
+        end
+        if not sleepSell(CONFIG.Sell.Poll) then return end
+    end
+    if not sellIsActive() then return end
     checkAlive()
     GameEvent:FireServer("MineTeleport", "Plot")
     if not sleepSell(CONFIG.Sell.TeleportDelay) then return end
@@ -4750,11 +4683,15 @@ local function closeUnitInteractionPanel(frame, buttonPath, retryDelay)
     local reportRetry = newRetryMonitor("Closing unit/inventory panel " .. frame.Name)
     while frame.Parent and visible(frame) do
         checkAlive()
-        local button = frame
-        for _, name in ipairs(buttonPath) do
-            button = button and button:FindFirstChild(name)
+        if frame.Name == "InventoryFrame" then
+            frame.Visible = false
+        else
+            local button = frame
+            for _, name in ipairs(buttonPath) do
+                button = button and button:FindFirstChild(name)
+            end
+            if button and visible(button) then clickButton(button) end
         end
-        if button and visible(button) then clickButton(button) end
         reportRetry()
         pause(retryDelay)
     end
@@ -5124,7 +5061,7 @@ end
 local function closeRequiredInventory()
     local function close()
         local frame = inventoryFrame()
-        if visible(frame) then clickButton(path(frame, {"Content", "Actions", "Close"})) end
+        frame.Visible = false
     end
     close()
     waitUntil(function() return not visible(inventoryFrame()) end, nil,
@@ -5134,9 +5071,8 @@ end
 local function openRequiredInventory()
     if visible(inventoryFrame()) then return end
     local function open()
-        if not visible(inventoryFrame()) then
-            clickButton(path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", "InventoryButton"}))
-        end
+        local frame = inventoryFrame()
+        if not visible(frame) then frame.Visible = true end
     end
     open()
     waitUntil(function() return visible(inventoryFrame()) end, nil,
@@ -6178,9 +6114,7 @@ local function isDisplayed(holder)
     if detector and detector:IsA("ClickDetector") then
         return detector.MaxActivationDistance > 0
     end
-    local holderLabel = pad and pad:FindFirstChild("HolderLabel")
-    if holderLabel and holderLabel:IsA("LayerCollector") then return holderLabel.Enabled end
-    return holderLabel and holderLabel:IsA("GuiObject") and holderLabel.Visible or false
+    return false
 end
 local function readLevel(holder)
     local pad = holder:FindFirstChild("Pad")
@@ -7166,8 +7100,8 @@ do
         local mine = playerGui:FindFirstChild("MineGui")
         local inventory = mine and mine:FindFirstChild("InventoryFrame")
         if visible(inventory) then
-            clickButton(path(inventory, {"Content", "Actions", "Close"}))
-            waitUntil(function() return not visible(inventory) end, math.huge, "Waiting for inventory to close before Hotbar Upgrades.", function() clickButton(path(inventory, {"Content", "Actions", "Close"})) end)
+            inventory.Visible = false
+            waitUntil(function() return not visible(inventory) end, math.huge, "Waiting for inventory to close before Hotbar Upgrades.", function() inventory.Visible = false end)
         end
         for _, entry in ipairs(queue) do
             for copy = 1, entry.count do
@@ -8190,6 +8124,7 @@ end
 local function resetRun()
     table.clear(scriptErrors.retries)
     if modules.idleClick then modules.idleClick.stop() end
+    if modules.gameReady then pcall(modules.gameReady.cleanup) end
     if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current = nil
     releaseInputs()
@@ -8407,17 +8342,6 @@ local function runStage(id, cacheZoneOnly)
 end
 
 startRun = function(id)
-    if alive and not modules.gameReady.isReady() then
-        if id == "master" then
-            preferences.masterEnabled = not preferences.masterEnabled
-            if preferences.masterEnabled then modules.workspaceCleanup.onMasterEnabled() end
-            savePreferences()
-            pages.master.run.Text = preferences.masterEnabled and "Cancel Master (waiting for game)" or pages.master.runText
-            minimizedMaster.Text = preferences.masterEnabled and "Master: Waiting" or "Master: OFF"
-        end
-        runPage(id).status.Text = "Waiting for offline collection and TeleportButton to change your character position."
-        return
-    end
     if not alive or busy or os.clock() - lastRun < CONFIG.General.ButtonDebounce then
         if alive and (id == "upgradingUnit" or id == "upgradingOldUnit" or id == "master") then
             logUnitUpgradeDetail(string.format("Start ignored for %s: busy=%s; active run=%s; active stage=%s; debounce remaining=%.2fs",
@@ -8448,7 +8372,6 @@ startRun = function(id)
     if id == "master" then
         minimizedActions.setRollEnabled(false)
         preferences.masterEnabled = true
-        modules.workspaceCleanup.onMasterEnabled()
         resetStageRows()
     end
     if not actionIsCurrent(token) then return end
@@ -8460,11 +8383,18 @@ startRun = function(id)
         if not actionIsCurrent(token) then return end
         local ok, result = pcall(function()
             if id == "master" then
-                modules.masterFly.start()
                 local cycle = 0
                 while actionIsCurrent(token) do
                     checkAlive()
                     cycle = cycle + 1
+                    if cycle == 1 then
+                        modules.gameReady.wait()
+                        checkAlive()
+                        modules.workspaceCleanup.onMasterEnabled()
+                        savePreferences()
+                        modules.plotCleanup.start()
+                        modules.masterFly.start()
+                    end
                     refreshUnitCooldown()
                     cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone, cycleSkipUnitsReason = nil, nil, nil
                     cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady, cycleBestEquipped = nil, nil, nil, false, false
@@ -8631,7 +8561,4 @@ do
 end
 resize()
 modules.workspaceCleanup.refresh()
-if modules.gameReady.wait() then
-    modules.plotCleanup.start()
-    if preferences.masterEnabled and not busy then startRun("master") end
-end
+if preferences.masterEnabled and not busy then startRun("master") end
