@@ -803,13 +803,13 @@ end
 
 -- Game settings are read live on each entry; no completion file is used.
 do
-local refreshInventory
-local function closeSettingsInventory()
-    local frame = refreshInventory
-    refreshInventory = nil
+local refreshSettingsFrame
+local function closeSettingsFrame()
+    local frame = refreshSettingsFrame
+    refreshSettingsFrame = nil
     if frame then pcall(function() frame.Visible = false end) end
 end
-modules.gameSettings = {cleanup = closeSettingsInventory, apply = function(checkCurrent, status)
+modules.gameSettings = {cleanup = closeSettingsFrame, apply = function(checkCurrent, status)
     local settings = {
         {name = "CutsceneExotic", section = "CutscenesOption", option = "Exotic", enabled = false},
         {name = "CutsceneMythical", section = "CutscenesOption", option = "Mythical", enabled = false},
@@ -868,15 +868,16 @@ modules.gameSettings = {cleanup = closeSettingsInventory, apply = function(check
                             break
                         end
                         reportRetry()
-                        -- Alternate every failed confirmation with an inventory refresh.
+                        -- Alternate every failed confirmation with a settings-frame refresh.
                         local gui = player:FindFirstChildOfClass("PlayerGui")
-                        local mine = gui and gui:FindFirstChild("MineGui")
-                        local inventory = mine and mine:FindFirstChild("InventoryFrame")
-                        if inventory and inventory:IsA("GuiObject") then
-                            refreshInventory = inventory
-                            inventory.Visible = true
-                            pause(0.5)
-                            closeSettingsInventory()
+                        local screen = gui and gui:FindFirstChild("ScreenGui")
+                        local gameGui = screen and screen:FindFirstChild("CutGrassGame")
+                        local frame = gameGui and gameGui:FindFirstChild("SettingsFrame")
+                        if frame and frame:IsA("GuiObject") then
+                            refreshSettingsFrame = frame
+                            frame.Visible = true
+                            pause(1)
+                            closeSettingsFrame()
                             check()
                         end
                         pause(CONFIG.General.WaitPoll)
@@ -1588,7 +1589,7 @@ Run enabled stages in the configured order. Each stage button can also run its s
 
 Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Waiting for ZoneBoardGui and standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, alternate every failed settings confirmation with an inventory refresh: set InventoryFrame.Visible=true for 0.5 seconds, close it with Visible=false, then check the setting again until confirmed. Do not resend the setting toggle while waiting. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs once, after the first successful Sell stage. Other-plot/weather cleanup also starts after Sell. If Sell is disabled or fails, automatic cleanup waits until Sell succeeds. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, alternate every failed settings confirmation with a settings-frame refresh: set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then check the setting again until confirmed. Do not resend the setting toggle while waiting. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs once, after the first successful Sell stage. Other-plot/weather cleanup also starts after Sell. If Sell is disabled or fails, automatic cleanup waits until Sell succeeds. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
