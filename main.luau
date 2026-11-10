@@ -1570,7 +1570,7 @@ HOTBAR UPGRADES
 Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Place each selected copy, check its identity, upgrade Damage toward the configured target and Speed/Mining to their available maxima, then pick it up before the next copy. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
         sell = [[ACTIONS
 1. Master waits for your owned plot's ZoneBoardGui and confirms the current zone before running stages. There is no separate game-load checker.
-2. Teleport to your plot, wait, open ChestFrame with Visible=true, collect the plot chest, and close it with Visible=false.
+2. Teleport to your plot, wait, retry ChestFrame.Visible=true once per second until the chest UI is visible, collect the plot chest, and close it with Visible=false.
 3. Teleport to the Hub. Move in front of the sell stand, face the camera toward it, and activate its prompts.
 4. Hold the enabled sell prompt for its required duration, then wait for the game to open the sell window with visible ancestors. Each failed window retry returns the current character to a different random point exactly one horizontal stud from the usual stand position, stops residual movement, faces the stand, and activates its prompt again. Repeat until the window appears or the run is stopped.
 5. Wait for a visible, active Select All button with a usable size, checking its name, text, or child caption. Click it once, wait, then wait for and click the separate Sell button. Wait one second after Sell, then click SellFrame.Close once per second while SellFrame.Visible remains true. Return to your plot only after the frame closes.
@@ -3283,8 +3283,24 @@ local function doSellOnce()
     GameEvent:FireServer("MineTeleport", "Plot")
     if not sleepSell(CONFIG.Sell.TeleportDelay) then return end
     checkAlive()
-    local chestFrame = path(playerGui, {"MineGui", "ChestFrame"})
-    chestFrame.Visible = true
+    local chestFrame
+    local nextChestOpen = 0
+    local reportChest = newRetryMonitor("Opening ChestFrame through Visible")
+    while sellIsActive() do
+        local currentGui = playerGui:FindFirstChild("MineGui")
+        chestFrame = currentGui and currentGui:FindFirstChild("ChestFrame")
+        if chestFrame and chestFrame:IsA("GuiObject") and visible(chestFrame) then
+            reportChest(nil, true)
+            break
+        end
+        if os.clock() >= nextChestOpen then
+            nextChestOpen = os.clock() + 1
+            if chestFrame and chestFrame:IsA("GuiObject") then chestFrame.Visible = true end
+            reportChest("Waiting for ChestFrame to become visible; retrying every second.")
+        end
+        if not sleepSell(CONFIG.Sell.Poll) then return end
+    end
+    if not sellIsActive() then return end
     local collected, collectionError = pcall(function() GameEvent:FireServer("MineTakeChest") end)
     chestFrame.Visible = false
     if not collected then error(collectionError, 0) end
