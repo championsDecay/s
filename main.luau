@@ -948,7 +948,6 @@ local function cleanup(destroyGui)
     if not alive then return end
     logging.flush()
     if modules.idleClick then modules.idleClick.stop() end
-    if modules.gameReady then pcall(modules.gameReady.cleanup) end
     if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current, minimizedActions.rollToken, minimizedActions.openToken = nil, nil, nil
     alive, busy, dragging = false, false, false
@@ -1552,9 +1551,9 @@ do
         master = [[MASTER FLOW
 Run enabled stages in the configured order. Each stage button can also run its stage once. Master repeats until stopped; saved Master/stage toggles are restored on load.
 
-Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Startup waiting and standalone stages do not enable fly.
+Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Waiting for ZoneBoardGui and standalone stages do not enable fly.
 
-At the very start of the first Master cycle, enable EventsFrameV2.Visible once per second until its Milestones.M1.Visible is true, then close EventsFrameV2. Do not run this loading check in later cycles. After loading, start fly and plot cleanup, then start each cycle with fresh cycle state and read the current zone from your ZoneBoard before settings, rewards, or stages. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. Tutorial Stage 0 performs the same live check. Then enabled automatic Workspace cleanup runs once, after Events milestone loading is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs once, after the first successful Sell stage. Other-plot/weather cleanup also starts after Sell. If Sell is disabled or fails, automatic cleanup waits until Sell succeeds. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
@@ -1570,7 +1569,7 @@ Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+
 HOTBAR UPGRADES
 Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Place each selected copy, check its identity, upgrade Damage toward the configured target and Speed/Mining to their available maxima, then pick it up before the next copy. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
         sell = [[ACTIONS
-1. The first Master cycle confirms loading through EventsFrameV2 and Milestones.M1 before running stages. Standalone Sell does not run this loading check.
+1. Master waits for your owned plot's ZoneBoardGui and confirms the current zone before running stages. There is no separate game-load checker.
 2. Teleport to your plot, wait, open ChestFrame with Visible=true, collect the plot chest, and close it with Visible=false.
 3. Teleport to the Hub. Move in front of the sell stand, face the camera toward it, and activate its prompts.
 4. Hold the enabled sell prompt for its required duration, then wait for the game to open the sell window with visible ancestors. Each failed window retry returns the current character to a different random point exactly one horizontal stud from the usual stand position, stops residual movement, faces the stand, and activates its prompt again. Repeat until the window appears or the run is stopped.
@@ -1634,12 +1633,12 @@ Skip if no displayed unit matches. Stop a unit at the target or when Damage is u
 Require Density 1 or higher in Z1-Z11, or Density 0 or higher in Z12 and above. Check the shared unit-sequence cooldown before refreshing anything. If active, keep displayed units and skip. Reset Cooldown clears it; a new zone resets it. Validate the equipment mode, use cached zone/Density, check plot ownership, and start the sequence cooldown.
 
 AVAILABILITY CHECK
-Clear occupied hotbar assignments, open InventoryFrame with Visible=true, and count current-zone whitelisted copies directly from inventory, including stack quantities. Close inventory with Visible=false. At Density 2+, require a nonempty animation tag; Density 0-1 accepts either. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is below the current zone minimum, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
+Clear occupied hotbar assignments, open InventoryFrame with Visible=true, and count current-zone whitelisted copies directly from inventory, including stack quantities. Close inventory with Visible=false. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is below the current zone minimum, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
 
 REPLACEMENT / PLACEMENT
 Once eligible, require a ready character, close panels, and remove all displayed units with confirmed pickup retries. Clear occupied hotbar assignments again, open inventory, and recheck available matching copies plus units already placed in required pads.
 
-Rank eligible inventory stacks by highest Damage, prefer _AnimTag on equal Damage, then preserve inventory order. Select only the highest ranked stack into hotbar 1. Confirm its stack quantity and that other hotbar slots are empty, keep inventory open, and place its copies in empty unlocked pads in holder-number order. Finish placing the selected stack before fetching another inventory card; confirm hotbar 1 is empty before loading another stack. Continue until every unlocked empty pad is filled, including pads beyond RequiredUnitCount, or no eligible inventory copies remain. RequiredUnitCount stays the minimum count gate. Keep inventory open between placement batches and close it when placement finishes or stops for insufficient copies.
+Rank eligible inventory stacks by highest Damage, then preserve inventory order on equal Damage. Select only the highest ranked stack into hotbar 1. Confirm its stack quantity and that other hotbar slots are empty, keep inventory open, and place its copies in empty unlocked pads in holder-number order. Finish placing the selected stack before fetching another inventory card; confirm hotbar 1 is empty before loading another stack. Continue until every unlocked empty pad is filled, including pads beyond RequiredUnitCount, or no eligible inventory copies remain. RequiredUnitCount stays the minimum count gate. Keep inventory open between placement batches and close it when placement finishes or stops for insufficient copies.
 
 If selection confirmation fails, recheck for delayed success, reacquire the same card, and retry without clearing the selected stack or cycling inventory closed and open. Unreadable quantities, UI waits, pickup, and placement retry without timeouts and report periodic errors. Preserve character, plot, hotbar identity, focus/text-field, and held-input checks.
 
@@ -2322,60 +2321,6 @@ local function closeUnitPanel(operation, checkCurrent)
     end
 end
 
--- Master checks loading only at the beginning of its first cycle.
-do
-    local openedEventsFrame
-    local function closeLoadingEvents()
-        local frame = openedEventsFrame
-        openedEventsFrame = nil
-        if frame then pcall(function() frame.Visible = false end) end
-    end
-    modules.gameReady = {
-        cleanup = closeLoadingEvents,
-        wait = function()
-            closeLoadingEvents()
-            local nextAttempt = 0
-            local reportRetry = newRetryMonitor("Waiting for Events milestone M1 to load")
-            pages.master.status.Text = "Waiting for Events milestone M1 to become visible..."
-            footer.Text = pages.master.status.Text
-            while true do
-                checkAlive()
-                local currentGui = player:FindFirstChildOfClass("PlayerGui")
-                if currentGui then playerGui = currentGui end
-                local mine = currentGui and currentGui:FindFirstChild("MineGui")
-                local frame = mine and mine:FindFirstChild("EventsFrameV2")
-                if frame and not frame:IsA("GuiObject") then frame = nil end
-                if os.clock() >= nextAttempt then
-                    nextAttempt = os.clock() + 1
-                    if frame then
-                        if openedEventsFrame ~= frame then closeLoadingEvents() end
-                        openedEventsFrame = frame
-                        frame.Visible = true
-                    end
-                end
-                if frame and frame == openedEventsFrame and frame.Visible then
-                    local milestone = frame
-                    for _, name in ipairs({"Safe", "Body", "Main", "Pages", "Milestones", "M1"}) do
-                        milestone = milestone and milestone:FindFirstChild(name)
-                    end
-                    -- Read the requested Visible property without changing the milestone.
-                    if milestone and milestone:IsA("GuiObject") and milestone.Visible then
-                        checkAlive()
-                        closeLoadingEvents()
-                        reportRetry(nil, true)
-                        logInfo("Startup", "Events milestone M1 is visible; game loaded.")
-                        return true
-                    end
-                    reportRetry("EventsFrameV2 is visible; waiting for Milestones.M1.Visible.")
-                else
-                    reportRetry("Waiting for EventsFrameV2; enabling it once per second.")
-                end
-                pause(CONFIG.General.WaitPoll)
-            end
-        end,
-    }
-end
-
 do
     local hotkeyActions = {[Enum.KeyCode.One] = minimizedActions.toggleMaster}
     local teleportKeys = {Enum.KeyCode.Three, Enum.KeyCode.Four, Enum.KeyCode.Five, Enum.KeyCode.Six}
@@ -2633,7 +2578,7 @@ do
     }
 end
 
--- Automatic Workspace cleanup runs once at the start of the first Master cycle, after Events milestone loading confirmation.
+-- Automatic Workspace cleanup runs once after the first successful Master Sell stage.
 -- It never polls or retries automatically; Run once remains a separate manual pass.
 -- Other MinePlots/weather use the independent automatic plotCleanup worker above.
 do
@@ -2788,7 +2733,7 @@ end
         pages.master.refreshWorkspaceCleanupToggle()
         if automaticAttempted then return end
         status.Text = CONFIG.General.WorkspaceCleanupEnabled
-            and "Auto cleanup: once at the start of the first Master cycle."
+            and "Auto cleanup: once after the first successful Master Sell stage."
             or "Auto cleanup: OFF. Run once is available until used."
         status.TextColor3 = colors.muted
     end
@@ -2800,8 +2745,8 @@ end
             CONFIG.General.WorkspaceCleanupEnabled = true
             refreshAutomaticStatus()
         end,
-        onCycleStart = function(cycle)
-            if not alive or cycle ~= 1 or automaticAttempted or not CONFIG.General.WorkspaceCleanupEnabled then return end
+        afterSell = function()
+            if not alive or automaticAttempted or not CONFIG.General.WorkspaceCleanupEnabled then return end
             automaticAttempted = true
             local ok, removed, failed = pcall(scan, true)
             if not alive then return end
@@ -2913,15 +2858,29 @@ end
 
 local function getCurrentZone()
     local plot = getMyPlot()
-    local list = path(plot, {"ZoneBoard", "ZoneBoardGui", "Root", "List"})
-    local reportRetry = newRetryMonitor("Detecting the current zone from your ZoneBoard")
+    local list
+    local function zoneList()
+        local board = plot:FindFirstChild("ZoneBoard")
+        local boardGui = board and board:FindFirstChild("ZoneBoardGui")
+        local root = boardGui and boardGui:FindFirstChild("Root")
+        return root and root:FindFirstChild("List")
+    end
+    local reportRetry = newRetryMonitor("Waiting for your ZoneBoardGui and current-zone rows")
     local lastSignature = nil
     local stableSince = os.clock()
 
     while true do
         checkPlot(plot)
-        if not list:IsDescendantOf(plot) then
-            error("ZoneBoard List was removed while detecting the zone.", 0)
+        local currentList = zoneList()
+        if not currentList then
+            list, lastSignature, stableSince = nil, nil, os.clock()
+            if activeRun == "master" then pages.master.status.Text = "Waiting for your plot's ZoneBoardGui..." end
+            reportRetry("Waiting for ZoneBoard.ZoneBoardGui.Root.List in your owned plot.")
+            pause(CONFIG.General.ScanPoll)
+            continue
+        end
+        if list ~= currentList then
+            list, lastSignature, stableSince = currentList, nil, os.clock()
         end
         local rows = {}
         for _, child in ipairs(list:GetChildren()) do
@@ -4944,18 +4903,12 @@ local function inventoryText(label)
     return ""
 end
 
-local function taggedInventoryName(itemName)
-    local tag = itemName and itemName:GetAttribute("_AnimTag")
-    return tag ~= nil and tag ~= ""
-end
-
 local function higherInventoryPriority(a, b)
     if a.damage.power ~= b.damage.power then return a.damage.power > b.damage.power end
     local width = math.max(#a.damage.digits, #b.damage.digits)
     local left = a.damage.digits .. string.rep("0", width - #a.damage.digits)
     local right = b.damage.digits .. string.rep("0", width - #b.damage.digits)
     if left ~= right then return left > right end
-    if a.tagged ~= b.tagged then return a.tagged end
     return a.index < b.index
 end
 
@@ -5135,7 +5088,7 @@ local function scanRequiredInventory(densityLevel, zoneId, cache)
     local parsedRows = {}
     if cache then cache.rows = parsedRows end
     local candidates, signature = {}, {}
-    local total, skippedNames, skippedTags, skippedDamage = 0, 0, 0, 0
+    local total, skippedNames, skippedDamage = 0, 0, 0
     -- An empty inventory is a valid zero count; it may still pass with displayed units.
     local targets = inventoryTargets(scroll, true, children) or {}
     for index, target in ipairs(targets) do
@@ -5147,11 +5100,8 @@ local function scanRequiredInventory(densityLevel, zoneId, cache)
         local content = row:FindFirstChild("Content")
         local itemName = content and content:FindFirstChild("ItemName")
         local name = cachedInventoryValue(itemName, parsed, "nameText", "name")
-        local tagged = taggedInventoryName(itemName)
         if not allowed[name] then
             skippedNames = skippedNames + 1
-        elseif densityLevel >= 2 and not tagged then
-            skippedTags = skippedTags + 1
         else
             local damage = cachedInventoryValue(content and content:FindFirstChild("Damage"), parsed, "damageText", "damage", inventoryDamageKey)
             if not damage then
@@ -5159,7 +5109,7 @@ local function scanRequiredInventory(densityLevel, zoneId, cache)
             else
                 local count = cachedInventoryValue(content and content:FindFirstChild("ActualItemCount"), parsed, "countText", "count", parseRequiredStackCount)
                 if not count then return nil, "Unreadable inventory stack count for " .. name .. "; waiting for its quantity." end
-                table.insert(candidates, {target = target, row = row, name = name, tagged = tagged,
+                table.insert(candidates, {target = target, row = row, name = name,
                     damage = damage, index = index, count = count, source = "inventory"})
                 total = total + count
             end
@@ -5167,11 +5117,11 @@ local function scanRequiredInventory(densityLevel, zoneId, cache)
     end
     table.sort(candidates, higherInventoryPriority)
     for _, entry in ipairs(candidates) do
-        table.insert(signature, string.format("%q:%s:%q:%s:%s:%s:%d", entry.target.name,
-            tostring(entry.target.order), entry.name, tostring(entry.tagged), tostring(entry.damage.power), entry.damage.digits, entry.count))
+        table.insert(signature, string.format("%q:%s:%q:%s:%s:%d", entry.target.name,
+            tostring(entry.target.order), entry.name, tostring(entry.damage.power), entry.damage.digits, entry.count))
     end
     return {summary = candidates, total = total, skippedNames = skippedNames,
-        skippedTags = skippedTags, skippedDamage = skippedDamage}, table.concat(signature, "|")
+        skippedDamage = skippedDamage}, table.concat(signature, "|")
 end
 
 local function readRequiredInventory(densityLevel, zoneId, operation)
@@ -5186,8 +5136,8 @@ local function readRequiredInventory(densityLevel, zoneId, operation)
         if result then
             if signature ~= lastSignature then lastSignature, stableSince = signature, os.clock() end
             if os.clock() - stableSince >= UI_SETTLE then
-                logUnitUpgradeDetail(string.format("%s density %d inventory count: %d whitelisted copies across %d stacks; skipped %d other names, %d untagged matches, %d unreadable Damage values.",
-                    zoneId, densityLevel, result.total, #result.summary, result.skippedNames, result.skippedTags, result.skippedDamage))
+                logUnitUpgradeDetail(string.format("%s density %d inventory count: %d whitelisted copies across %d stacks; skipped %d other names, %d unreadable Damage values.",
+                    zoneId, densityLevel, result.total, #result.summary, result.skippedNames, result.skippedDamage))
                 reportRetry(nil, true)
                 return result
             end
@@ -5222,9 +5172,9 @@ local function selectRequiredStack(candidate)
         local content = match:FindFirstChild("Content")
         local itemName = content and content:FindFirstChild("ItemName")
         local damage = inventoryDamageKey(inventoryText(content and content:FindFirstChild("Damage")))
-        if inventoryText(itemName) ~= candidate.name or taggedInventoryName(itemName) ~= candidate.tagged
+        if inventoryText(itemName) ~= candidate.name
             or not damage or damage.power ~= candidate.damage.power or damage.digits ~= candidate.damage.digits then
-            error("Inventory name/tag/Damage changed before selecting " .. candidate.name .. ".", 0)
+            error("Inventory name/Damage changed before selecting " .. candidate.name .. ".", 0)
         end
         if visible(match) then clickButton(match) end
     end
@@ -8124,7 +8074,6 @@ end
 local function resetRun()
     table.clear(scriptErrors.retries)
     if modules.idleClick then modules.idleClick.stop() end
-    if modules.gameReady then pcall(modules.gameReady.cleanup) end
     if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current = nil
     releaseInputs()
@@ -8387,14 +8336,6 @@ startRun = function(id)
                 while actionIsCurrent(token) do
                     checkAlive()
                     cycle = cycle + 1
-                    if cycle == 1 then
-                        modules.gameReady.wait()
-                        checkAlive()
-                        modules.workspaceCleanup.onMasterEnabled()
-                        savePreferences()
-                        modules.plotCleanup.start()
-                        modules.masterFly.start()
-                    end
                     refreshUnitCooldown()
                     cycleUnitsPreparedZone, cycleUnitUpgradeReadyZone, cycleSkipUnitsReason = nil, nil, nil
                     cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady, cycleBestEquipped = nil, nil, nil, false, false
@@ -8403,8 +8344,10 @@ startRun = function(id)
                         pages.master.status.Text = "Cycle " .. cycle .. ": reading the current zone..."
                         getCycleZone()
                         if cycle == 1 then
+                            modules.workspaceCleanup.onMasterEnabled()
+                            savePreferences()
+                            modules.masterFly.start()
                             modules.gameSettings.apply(nil, pages.master.status)
-                            modules.workspaceCleanup.onCycleStart(cycle)
                         end
                         modules.dailyRewards.runCycle()
                         for _, stage in ipairs(order) do
@@ -8419,6 +8362,10 @@ startRun = function(id)
                             elseif stage ~= "cycleEnd" and preferences.stages[stage] then
                                 if not (cycleSkipUnitsReason and (stage == "units" or stage == "mutation" or stage == "upgradingUnit")) then
                                     runStage(stage)
+                                    if stage == "sell" then
+                                        modules.workspaceCleanup.afterSell()
+                                        modules.plotCleanup.start()
+                                    end
                                 end
                             end
                         end
