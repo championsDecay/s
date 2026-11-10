@@ -323,9 +323,9 @@ local CONFIG = {
                     Frozen = 0,
                     Inferno = 0,
                     Nightmare = 0,
-                    Unreal = 5,
+                    Unreal = 8,
                 },
-                RequiredUnitCount = 5,
+                RequiredUnitCount = 8,
                 Names = {"Wolf Guardian", "Ratio Blade", "Sixth Panther", "Bounce Brawler", "Ten Tails Host", "Baryon Chakra", "Beast Scholar", "Earring Fusion", "Perfect Lifeform", "Vessel King", "Storm Mane"},
                 
             }
@@ -969,6 +969,7 @@ local function cleanup(destroyGui)
     minimizedActions.openWorker = nil
     releaseInputs()
     if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
+    if modules.upgrades and modules.upgrades.cleanup then pcall(modules.upgrades.cleanup) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
     if modules.masterFly then pcall(modules.masterFly.stop) end
@@ -1357,7 +1358,7 @@ local specs = {
     {"master", "Master", "Start Master", "Runs enabled stages in order and repeats until stopped."},
     {"sell", "Sell", "Run Auto Sell", "1. Collect the chest at your plot.\n2. Teleport to the Hub and open the sell stand.\n3. Click Select All, then Sell.\n4. Return to your plot."},
     {"pickaxe", "Pickaxe", "Buy Best Pickaxe", "1. Check the current zone, then open, refresh, and close the shop.\n2. Find the highest unlocked pickaxe; at the max zone, also select the second highest.\n3. Check each saved count against the same limit and require its buy button to be green.\n4. Record and send one purchase request per eligible selection."},
-    {"upgrades", "Upgrades", "Run Upgrades", "1. Open the skill tree and scan the current zone.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-4 and 6-8 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
+    {"upgrades", "Upgrades", "Run Upgrades", "1. Read the current zone from your ZoneBoard.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-4 and 6-8 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
     {"upgradingOldUnit", "Upgrade Old Units", "Run Upgrade Old Units", "1. Check that current-zone Density is 0.\n2. Find displayed units matching the previous zone's required names.\n3. Upgrade Damage toward the target, starting with the lowest level.\n4. Stop when the target is reached or further upgrades are unavailable."},
     {"unlockSlots", "Unlock slots", "Run Unlock slots", "Z4 only. Try each locked slot up to five times with a random one-stud offset and a two-second hold. Stop at the first slot still locked after five attempts; skip stages 6-8 that cycle. Once all slots unlock, skip this stage on later cycles."},
     {"units", "Required Units", "Run Required Units", "1. Check cooldown and clear the hotbar.\n2. Count whitelisted inventory copies plus displayed units.\n3. If eligible, remove displayed units.\n4. Fill empty unlocked pads using one stack at a time through hotbar 1."},
@@ -1553,7 +1554,7 @@ Run enabled stages in the configured order. Each stage button can also run its s
 
 Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Startup waiting and standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. Tutorial Stage 0 performs the same live check. Then enabled automatic Workspace cleanup runs once, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state and read the current zone from your ZoneBoard before settings, rewards, or stages. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. Tutorial Stage 0 performs the same live check. Then enabled automatic Workspace cleanup runs once, after startup teleport is confirmed. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
@@ -1593,7 +1594,7 @@ Unavailable file functions, invalid or unreadable count data, a disappearing pre
 BETWEEN MASTER CYCLES
 During the cycle delay, open the shop and click visible buy buttons on rows with LayoutOrder 1 then 2 at the configured click interval. These use VirtualInputManager mouse-down/up clicks with a 0.05-second hold, separate from this stage's best-pickaxe limit/count reservation. Close the shop and restore position when the wait ends or is stopped. A shop-wait error uses the rest of the cycle delay. Minimized-area clicks resume afterward; the separate notification box remains active throughout.]],
         upgrades = [[ZONE / DENSITY SCAN
-Open the skill tree. Detect the highest numbered loaded Zone_Z<number> folder after it settles. Cache its zone ID, folder name, and confirmed Density for the cycle. A changed zone clears the unit-sequence cooldown. The maximum configured zone is the highest numeric Z key in RequiredByZone, with no fixed zone-number limit.
+Read all of your owned plot's ZoneBoard rows in numeric order. ZoneRowN means ZN. Button.Lock.Visible true means locked; false means unlocked. The highest numbered row with its lock hidden is the current zone. Retry missing rows or Lock objects until stable. Set MineGui.SkillTreeFullFrame.Visible to true, then wait for Tree.Canvas and the matching Zone_ZN folder to read Density and Colossus data. The zone still comes from the ZoneBoard. Set Visible to false when finished. Cache the zone ID, folder name, and confirmed Density for the cycle. A changed zone clears the unit-sequence cooldown. The maximum configured zone is the highest numeric Z key in RequiredByZone, with no fixed zone-number limit.
 
 If the Upgrades button is missing, hidden, or inactive, teleport above your plot chest, open and close it without taking its contents, restore your position, and retry the button. Stop cancels recovery; prolonged failures use the normal throttled retry logs.
 
@@ -1614,10 +1615,10 @@ Both messages end their elapsed-time line with @everyone. Time is measured from 
 Each notification type has its own sent flag per zone. Pending requests suppress duplicates in the current run; successful HTTP responses save the sent flag in the preferences cache. Failed requests can be retried on later checks. Missing webhook/request support skips sending. A cache-save failure is warned because it can allow a repeat after restarting.
 
 WHEN UPGRADES IS OFF
-In Master, open the skill tree and freshly scan the Canvas zone, Density, and Colossus Pips every cycle, including while Upgrades is OFF. Recheck Colossus progress in the current zone. If valid Colossus Pips have not reached 1, turn stages 3-4 and 6-8 ON and resume Upgrades in the same cycle. Turn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. These scans also prepare zone selection and tutorial hiding.
+In Master, freshly read the ZoneBoard zone, Density, and Colossus Pips every cycle, including while Upgrades is OFF. Open the skill tree by enabling SkillTreeFullFrame.Visible, wait for Tree.Canvas and the board-selected zone, then read upgrade data and send requests. Missing or unsettled Density data is retried until ready or stopped. Recheck Colossus progress in the current zone. If valid Colossus Pips have not reached 1, turn stages 3-4 and 6-8 ON and resume Upgrades in the same cycle. Turn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. These scans also prepare zone selection and tutorial hiding.
 
 FINISH
-Close the skill tree and keep the zone/Density values ready for Cycle end. Current/next selection follows its toggles; a standalone Upgrades run selects zones immediately after finishing.]],
+Disable SkillTreeFullFrame.Visible to close the skill tree and keep the zone/Density values ready for Cycle end. Stop and unload also close a frame opened by the script. Current/next selection follows its toggles; a standalone Upgrades run selects zones immediately after finishing.]],
         upgradingOldUnit = [[ENTRY CONDITIONS
 Use the cached current zone and Density. Run only at Density 0. Z1 has no previous zone and is skipped. Skip if the previous numbered zone has no configured Names.
 
@@ -2751,7 +2752,7 @@ local PLOT_KEEP = {
     {"Holders"},
     {"Nodes"},
     {"Mailbox"},
-    {"TrialStone", "Plinth1"},
+    {"TrialStone"},
     {"PlatformBack"},
     {"ZoneBoard"},
 }
@@ -3002,96 +3003,92 @@ local function checkPlot(plot)
     end
 end
 
-local function waitForZone(cachedZoneName)
-    local canvas = path(playerGui, {"MineGui", "SkillTreeFullFrame", "Tree", "Canvas"})
-    if cachedZoneName then return path(canvas, {cachedZoneName}) end
-    local reportRetry = newRetryMonitor("Detecting the current Upgrades zone")
+local function getCurrentZone()
+    local plot = getMyPlot()
+    local list = path(plot, {"ZoneBoard", "ZoneBoardGui", "Root", "List"})
+    local reportRetry = newRetryMonitor("Detecting the current zone from your ZoneBoard")
     local lastSignature = nil
     local stableSince = os.clock()
 
     while true do
-        checkAlive()
-        if not canvas:IsDescendantOf(playerGui) then
-            error("Skill tree Canvas was removed while detecting the zone.", 0)
+        checkPlot(plot)
+        if not list:IsDescendantOf(plot) then
+            error("ZoneBoard List was removed while detecting the zone.", 0)
         end
-        local highestNumber = 0
-        local highestZone = nil
-        local names = {}
-        for _, child in ipairs(canvas:GetChildren()) do
-            local number = tonumber(child.Name:match("^Zone_Z(%d+)$"))
+        local rows = {}
+        for _, child in ipairs(list:GetChildren()) do
+            local number = tonumber(child.Name:match("^ZoneRow(%d+)$"))
             if number and number >= 1 then
-                table.insert(names, child.Name)
-                if number > highestNumber then
-                    highestNumber = number
-                    highestZone = child
-                end
+                table.insert(rows, {number = number, row = child})
             end
         end
-        table.sort(names)
-        local signature = table.concat(names, "|")
-        if signature ~= lastSignature then
-            lastSignature = signature
-            stableSince = os.clock()
-        elseif highestZone and os.clock() - stableSince >= SETTLE_TIME then
-            local zoneId = "Z" .. tostring(highestNumber)
-
-            reportRetry(nil, true)
-            return highestZone, zoneId
+        table.sort(rows, function(a, b) return a.number < b.number end)
+        local highestNumber = 0
+        local entries = {}
+        local ready = #rows > 0
+        local problem = "ZoneBoard rows are missing or still changing."
+        for index, entry in ipairs(rows) do
+            if entry.number ~= index then
+                ready = false
+                problem = "Waiting for ZoneRow" .. index .. " before scanning later zones."
+                break
+            end
+            local button = entry.row:FindFirstChild("Button")
+            local lock = button and button:FindFirstChild("Lock")
+            if not lock or not lock:IsA("GuiObject") then
+                ready = false
+                problem = entry.row.Name .. ": Button.Lock is missing."
+                break
+            end
+            local locked = lock.Visible
+            table.insert(entries, string.format("%d:%s", entry.number, tostring(locked)))
+            if not locked then highestNumber = math.max(highestNumber, entry.number) end
         end
-        reportRetry("Canvas zone folders are missing or still changing.")
+        if ready and highestNumber > 0 then
+            local signature = table.concat(entries, "|")
+            if signature ~= lastSignature then
+                lastSignature = signature
+                stableSince = os.clock()
+            elseif os.clock() - stableSince >= SETTLE_TIME then
+                local zoneId = "Z" .. tostring(highestNumber)
+                reportRetry(nil, true)
+                return zoneId, "Zone_" .. zoneId
+            end
+        else
+            lastSignature = nil
+            stableSince = os.clock()
+            if ready then problem = "ZoneBoard has no confirmed unlocked zone." end
+        end
+        reportRetry(problem)
         pause(CONFIG.General.ScanPoll)
     end
 end
+
+local openedUpgradeFrame = nil
 
 local function openUpgrades()
-    local reportRetry = newRetryMonitor("Opening Upgrades UI")
-    local nextClick, attempted = 0, false
-    local lastProblem = "UpgradesButton is not available."
-    while true do
-        checkAlive()
-        local currentGui = player:FindFirstChildOfClass("PlayerGui")
-        if currentGui then playerGui = currentGui end
-        local mine = playerGui:FindFirstChild("MineGui")
-        local frame = mine and mine:FindFirstChild("SkillTreeFullFrame")
-        if visible(frame) then reportRetry(nil, true); return attempted end
-        if os.clock() >= nextClick then
-            local object = mine
-            for _, name in ipairs({"LeftBar", "Content", "Container", "UpgradesButton"}) do
-                object = object and object:FindFirstChild(name)
-            end
-            local target, reason = resolveButton(object)
-            if target and visible(target) and target.Active then
-                attempted = true
-                local ok, message = pcall(clickButton, target)
-                lastProblem = ok and "UpgradesButton was clicked, but SkillTreeFullFrame did not open."
-                    or tostring(message)
-            else
-                lastProblem = reason or "UpgradesButton is hidden or inactive."
-                stageStatus("upgrades").Text = "Upgrades button unavailable; refreshing the UI through your chest..."
-                local recovered, recoveryMessage = pcall(recoverUnitPanelThroughChest, nil, "UpgradesButton recovery")
-                checkAlive()
-                if recovered then
-                    stageStatus("upgrades").Text = "Chest refreshed; retrying the Upgrades button..."
-                else
-                    lastProblem = lastProblem .. " Chest recovery failed: " .. tostring(recoveryMessage)
-                end
-            end
-            reportRetry(lastProblem)
-            nextClick = os.clock() + math.max(CONFIG.General.RetryInterval, SETTLE_TIME)
-        end
-        pause(CONFIG.General.ScanPoll)
-    end
+    checkAlive()
+    local frame = path(playerGui, {"MineGui", "SkillTreeFullFrame"})
+    if not frame.Visible then openedUpgradeFrame = frame end
+    frame.Visible = true
+    return frame
 end
 
-local function closeSkillTree()
-    local mine = playerGui:FindFirstChild("MineGui")
-    local frame = mine and mine:FindFirstChild("SkillTreeFullFrame")
-    if not visible(frame) then return end
-    clickButton(path(frame, {"Footer", "Close"}))
-    waitUntil(function() return not frame.Parent or not visible(frame) end,
-        LOAD_TIMEOUT, "Waiting for skill tree to close after clicking Footer.Close.", function()
-            clickButton(path(frame, {"Footer", "Close"}))
-        end)
+local function closeSkillTree(ownedOnly)
+    local frame = openedUpgradeFrame
+    if not ownedOnly then
+        local mine = playerGui:FindFirstChild("MineGui")
+        frame = (mine and mine:FindFirstChild("SkillTreeFullFrame")) or frame
+    end
+    openedUpgradeFrame = nil
+    if frame and frame.Parent then frame.Visible = false end
+end
+
+local function getUpgradeZone(zoneName)
+    checkAlive()
+    assert(zoneName and zoneName:match("^Zone_Z%d+$"), "A ZoneBoard zone is required for the skill tree.")
+    local frame = openUpgrades()
+    return path(frame, {"Tree", "Canvas", zoneName})
 end
 
 local cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady
@@ -3100,29 +3097,21 @@ local readCycleDensity
 -- Keep the last confirmed scan across cycles, but start fresh on each script execution.
 local savedZoneScan
 local function useSavedZoneScan()
-    if not savedZoneScan then return false end
-    cycleZoneId, cycleZoneName, cycleDensityLevel = savedZoneScan.zoneId, savedZoneScan.zoneName, savedZoneScan.densityLevel
+    if not savedZoneScan or savedZoneScan.zoneId ~= cycleZoneId then return false end
+    cycleDensityLevel = savedZoneScan.densityLevel
     minimizedActions.setNotificationZone(cycleZoneId)
     refreshMasterRequirements(cycleZoneId, cycleDensityLevel)
     return true
 end
 local function getCycleZone()
-    if not cycleZoneId and activeStage ~= "upgrades" and not preferences.stages.upgrades then useSavedZoneScan() end
     if not cycleZoneId then
-
-        local opened = openUpgrades()
-        local zone, zoneId = waitForZone()
-        cycleZoneId, cycleZoneName = zoneId, zone.Name
-        minimizedActions.setNotificationZone(zoneId)
-
-        cycleDensityLevel = assert(readCycleDensity, "Density reader is not initialized.")(zone)
+        cycleZoneId, cycleZoneName = getCurrentZone()
+        cycleDensityLevel = nil
+        if activeStage ~= "upgrades" and not preferences.stages.upgrades then useSavedZoneScan() end
+        minimizedActions.setNotificationZone(cycleZoneId)
         refreshMasterRequirements(cycleZoneId, cycleDensityLevel)
-        logUnitUpgradeDetail(string.format("%s (%s), density %d cached for this cycle.",
-            cycleZoneId, cycleZoneName, cycleDensityLevel))
-
-        if opened and activeStage ~= "upgrades" then
-            closeSkillTree()
-        end
+        logUnitUpgradeDetail(string.format("%s (%s) cached from ZoneBoard for this cycle.",
+            cycleZoneId, cycleZoneName))
     end
     return cycleZoneId, cycleZoneName
 end
@@ -4048,11 +4037,9 @@ modules.pickaxe = {
     isWaiting = function() return waitingAtPickaxeShop end,
     run = function()
         status.Text = "Checking the current zone for pickaxe purchases..."
-        -- Pickaxe runs before Upgrades, so check the live zone instead of last cycle's cache.
-        local opened = openUpgrades()
-        local _, zoneId = waitForZone()
+        -- Master detects the zone at cycle start; standalone runs detect it on demand.
+        local zoneId = getCycleZone()
         local atMaxZone = modules.upgrades.isMaxZone(zoneId)
-        if opened then closeSkillTree() end
         refreshPickaxeShop()
 
         local event = getGameEvent()
@@ -4186,7 +4173,7 @@ local function scanDensity(zone)
     while true do
         checkAlive()
 
-        zone = waitForZone(zone.Name)
+        zone = getUpgradeZone(zone.Name)
         local entries = {}
         local level = 0
         local ready = true
@@ -4415,7 +4402,7 @@ local function upgradeNode(zone, nodeName, zoneId)
     while true do
         checkAlive()
         if not alive then error("Unloaded.", 0) end
-        zone = waitForZone(zone.Name)
+        zone = getUpgradeZone(zone.Name)
         colossusPips = reachedColossusPips(zone)
         if shouldStopForColossus(zoneId, colossusPips) then break end
 
@@ -4468,7 +4455,7 @@ local function upgradeNodes(zone, densityLevel, zoneId)
     local attempted = {}
     local lastPolicy = nil
     while alive and not shouldStopForColossus(zoneId, colossusPips) do
-        zone = waitForZone(zone.Name)
+        zone = getUpgradeZone(zone.Name)
 
         status.Text = "Refreshing " .. zone.Name .. " density..."
         densityLevel, zone = scanDensity(zone)
@@ -4576,18 +4563,14 @@ end
 
 local function scanCurrentUpgradeZone()
     checkAlive()
-    cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady = nil, nil, nil, false
-    status.Text = "Opening Upgrades for a fresh zone and Density scan..."
-    openUpgrades()
-    pause(SETTLE_TIME)
-    local zone, zoneId = waitForZone()
-    cycleZoneId, cycleZoneName = zoneId, zone.Name
+    cycleDensityLevel, cycleZoneReady = nil, false
+    status.Text = "Opening the skill tree and checking current-zone upgrade data..."
+    local zoneId, zoneName = getCycleZone()
     minimizedActions.setNotificationZone(zoneId)
-    local level
-    level, zone = scanDensity(zone)
+    local level, zone = scanDensity(getUpgradeZone(zoneName))
     syncUnitSequenceZone(zoneId)
     notifyMaxZoneReached(zoneId)
-    logInfo("Upgrades", string.format("Fresh UI scan: %s, Density %d.", zoneId, level))
+    logInfo("Upgrades", string.format("Fresh ZoneBoard zone: %s, Density %d.", zoneId, level))
     return zone, zoneId, level
 end
 
@@ -4652,9 +4635,20 @@ connect(selectNext.Activated, function()
     refreshZoneToggles(false)
 end)
 refreshZoneToggles(false)
-modules.upgrades = {isMaxZone = isMaxZone, setBusy = refreshZoneToggles, getDensity = function()
+modules.upgrades = {isMaxZone = isMaxZone, setBusy = refreshZoneToggles,
+cleanup = function() closeSkillTree(true) end, getDensity = function()
 
     getCycleZone()
+    if cycleDensityLevel == nil then
+        local mine = playerGui:FindFirstChild("MineGui")
+        local frame = mine and mine:FindFirstChild("SkillTreeFullFrame")
+        local wasOpen = frame and frame.Visible
+        local ok, problem = pcall(function()
+            assert(readCycleDensity, "Density reader is not initialized.")(getUpgradeZone(cycleZoneName))
+        end)
+        if not wasOpen then closeSkillTree(true) end
+        if not ok then error(problem, 0) end
+    end
     assert(cycleDensityLevel ~= nil, "Density cache is missing.")
     return cycleDensityLevel
 end, cacheCurrentZone = function()
@@ -4690,7 +4684,6 @@ end, run = function()
     cycleZoneReady = false
     local result = runUpgrades()
     checkAlive()
-    status.Text = "Closing the skill tree; zone selection waits until the end..."
     closeSkillTree()
     assert(cycleDensityLevel ~= nil, "Density cache is missing.")
     cycleZoneReady = true
@@ -8201,6 +8194,7 @@ local function resetRun()
     runScope.current = nil
     releaseInputs()
     if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
+    if modules.upgrades and modules.upgrades.cleanup then pcall(modules.upgrades.cleanup) end
     if modules.tutorial then modules.tutorial.cleanup() end
     if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
     if modules.masterFly then pcall(modules.masterFly.stop) end
@@ -8476,13 +8470,15 @@ startRun = function(id)
                     cycleZoneId, cycleZoneName, cycleDensityLevel, cycleZoneReady, cycleBestEquipped = nil, nil, nil, false, false
                     resetStageRows()
                     local cycleOK, cycleError = pcall(function()
+                        pages.master.status.Text = "Cycle " .. cycle .. ": reading the current zone..."
+                        getCycleZone()
                         if cycle == 1 then
                             modules.gameSettings.apply(nil, pages.master.status)
                             modules.workspaceCleanup.onCycleStart(cycle)
                         end
                         modules.dailyRewards.runCycle()
                         for _, stage in ipairs(order) do
-                            -- Always visit Upgrades; OFF still opens the UI and scans fresh values.
+                            -- Always visit Upgrades; OFF still opens the frame through Visible and scans fresh values.
                             if stage == "upgrades" then
                                 runStage(stage, not preferences.stages.upgrades)
                             elseif stage == "unlockSlots" and preferences.stages[stage]
