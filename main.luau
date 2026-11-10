@@ -802,7 +802,14 @@ local function getGameEvent()
 end
 
 -- Game settings are read live on each entry; no completion file is used.
-modules.gameSettings = {apply = function(checkCurrent, status)
+do
+local refreshInventory
+local function closeSettingsInventory()
+    local frame = refreshInventory
+    refreshInventory = nil
+    if frame then pcall(function() frame.Visible = false end) end
+end
+modules.gameSettings = {cleanup = closeSettingsInventory, apply = function(checkCurrent, status)
     local settings = {
         {name = "CutsceneExotic", section = "CutscenesOption", option = "Exotic", enabled = false},
         {name = "CutsceneMythical", section = "CutscenesOption", option = "Mythical", enabled = false},
@@ -850,11 +857,37 @@ modules.gameSettings = {apply = function(checkCurrent, status)
                 event:FireServer("ToggleSetting", setting.name)
                 toggled = toggled + 1
                 -- A delayed reply must not cause another toggle that undoes the first.
-                waitUntil(function()
-                    check()
-                    local confirmed = readState(setting)
-                    return confirmed and confirmed.enabled == setting.enabled
-                end, nil, "Confirming game setting " .. setting.name .. (setting.enabled and " ON" or " OFF"))
+                local operation = "Confirming game setting " .. setting.name .. (setting.enabled and " ON" or " OFF")
+                if activeRun == "master" then
+                    local reportRetry = newRetryMonitor(operation)
+                    while true do
+                        check()
+                        local confirmed = readState(setting)
+                        if confirmed and confirmed.enabled == setting.enabled then
+                            reportRetry(nil, true)
+                            break
+                        end
+                        reportRetry()
+                        -- Alternate every failed confirmation with an inventory refresh.
+                        local gui = player:FindFirstChildOfClass("PlayerGui")
+                        local mine = gui and gui:FindFirstChild("MineGui")
+                        local inventory = mine and mine:FindFirstChild("InventoryFrame")
+                        if inventory and inventory:IsA("GuiObject") then
+                            refreshInventory = inventory
+                            inventory.Visible = true
+                            pause(0.5)
+                            closeSettingsInventory()
+                            check()
+                        end
+                        pause(CONFIG.General.WaitPoll)
+                    end
+                else
+                    waitUntil(function()
+                        check()
+                        local confirmed = readState(setting)
+                        return confirmed and confirmed.enabled == setting.enabled
+                    end, nil, operation)
+                end
             end
         end
     end
@@ -862,6 +895,7 @@ modules.gameSettings = {apply = function(checkCurrent, status)
     if status then status.Text = summary end
     return summary
 end}
+end
 
 local function releaseInputs()
     local prompt, key, mouse = heldPrompt, heldKey, mouseHeld
@@ -948,6 +982,7 @@ local function cleanup(destroyGui)
     if not alive then return end
     logging.flush()
     if modules.idleClick then modules.idleClick.stop() end
+    if modules.gameSettings and modules.gameSettings.cleanup then pcall(modules.gameSettings.cleanup) end
     if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current, minimizedActions.rollToken, minimizedActions.openToken = nil, nil, nil
     alive, busy, dragging = false, false, false
@@ -1553,7 +1588,7 @@ Run enabled stages in the configured order. Each stage button can also run its s
 
 Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Waiting for ZoneBoardGui and standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs once, after the first successful Sell stage. Other-plot/weather cleanup also starts after Sell. If Sell is disabled or fails, automatic cleanup waits until Sell succeeds. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, alternate every failed settings confirmation with an inventory refresh: set InventoryFrame.Visible=true for 0.5 seconds, close it with Visible=false, then check the setting again until confirmed. Do not resend the setting toggle while waiting. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs once, after the first successful Sell stage. Other-plot/weather cleanup also starts after Sell. If Sell is disabled or fails, automatic cleanup waits until Sell succeeds. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
@@ -2276,43 +2311,33 @@ local function recoverUnitPanelThroughChest(checkCurrent, operation, retryTelepo
     if retryTeleport then return teleported end
 end
 
-local function tryUnitExit(focus, method)
-    local object = focus:FindFirstChild("ExitButton")
-    if not object then error("ExitButton is missing from " .. focus:GetFullName(), 0) end
-    local exit, reason = resolveButton(object)
-    if not exit then error("Cannot activate ExitButton: " .. tostring(reason), 0) end
-    if not visible(exit) then error("ExitButton is hidden: " .. exit:GetFullName(), 0) end
-    if type(firesignal) ~= "function" then error("ExitButton signal activation needs firesignal.", 0) end
-    if method == "Activated" then firesignal(exit.Activated, nil, 1)
-    else firesignal(exit.MouseButton1Click) end
+local function hideUnitPanel(focus)
+    focus.Visible = false
 end
 
 local function closeUnitPanel(operation, checkCurrent)
-    local methods = {"MouseButton1Click", "Activated"}
-    local reportRetry = newRetryMonitor(operation or "Closing unit panel with ExitButton")
-    local attempt, nextAttempt, hiddenSince, sawPanel = 0, 0, nil, false
+    local reportRetry = newRetryMonitor(operation or "Closing SlotFocusFrame through Visible")
+    local nextAttempt, hiddenSince, sawPanel = 0, nil, false
     while true do
         checkAlive()
         if checkCurrent then checkCurrent() end
         local mine = playerGui:FindFirstChild("MineGui")
         local focus = mine and mine:FindFirstChild("SlotFocusFrame")
-        if not visible(focus) then
+        if not focus or not focus.Visible then
             if not sawPanel then reportRetry(nil, true); return end
             hiddenSince = hiddenSince or os.clock()
             if os.clock() - hiddenSince >= 0.1 then reportRetry(nil, true); return end
         else
             sawPanel, hiddenSince = true, nil
             if os.clock() >= nextAttempt then
-                attempt = attempt + 1
-                local method = methods[(attempt - 1) % #methods + 1]
-                local ok, message = pcall(tryUnitExit, focus, method)
+                local ok, message = pcall(hideUnitPanel, focus)
                 checkAlive()
                 if checkCurrent then checkCurrent() end
                 pause(SETTLE_TIME)
                 local currentMine = playerGui:FindFirstChild("MineGui")
                 local currentFocus = currentMine and currentMine:FindFirstChild("SlotFocusFrame")
-                if visible(currentFocus) then
-                    reportRetry(not ok and message or ("Tried " .. method .. "; unit panel is still visible."))
+                if currentFocus and currentFocus.Visible then
+                    reportRetry(not ok and message or "SlotFocusFrame.Visible is still enabled; retrying.")
                 end
                 nextAttempt = os.clock() + CONFIG.General.RetryInterval
             end
@@ -4652,7 +4677,7 @@ end
 
 local function closeUnitInteractionPanel(frame, buttonPath, retryDelay)
     if #buttonPath == 1 and buttonPath[1] == "ExitButton" then
-        closeUnitPanel("Closing unit panel with ExitButton before unit interaction")
+        closeUnitPanel("Closing SlotFocusFrame through Visible before unit interaction")
         return
     end
     local reportRetry = newRetryMonitor("Closing unit/inventory panel " .. frame.Name)
@@ -5518,14 +5543,13 @@ local function mutationPanel()
     return visible(panel) and panel or nil
 end
 local function closeFocus()
-    closeUnitPanel("Closing mutation/unit panel with ExitButton")
+    closeUnitPanel("Closing mutation/unit panel through SlotFocusFrame.Visible")
     ownsFocus = false
 end
 local function cleanupFocus()
     if not ownsFocus then return end
     local focus = focusFrame()
-    if visible(focus) then pcall(tryUnitExit, focus, "MouseButton1Click") end
-    if visible(focus) then pcall(tryUnitExit, focus, "Activated") end
+    if focus and focus.Visible then pcall(hideUnitPanel, focus) end
     ownsFocus = false
 end
 local function scanNow(plot, RequiredUnitCount)
@@ -6147,15 +6171,14 @@ local function statFocusFrame()
     return mine and mine:FindFirstChild("SlotFocusFrame")
 end
 local function closeStatFocus()
-    closeUnitPanel("Closing unit Stats panel with ExitButton")
+    closeUnitPanel("Closing unit Stats panel through SlotFocusFrame.Visible")
     ownsStatFocus = false
     pause(CONFIG.Units.StatUpgrade.PanelSettleTime)
 end
 local function cleanupStatFocus()
     if not ownsStatFocus then return end
     local focus = statFocusFrame()
-    if visible(focus) then pcall(tryUnitExit, focus, "MouseButton1Click") end
-    if visible(focus) then pcall(tryUnitExit, focus, "Activated") end
+    if focus and focus.Visible then pcall(hideUnitPanel, focus) end
     ownsStatFocus = false
 end
 local function createUnitStatSession(plot, minimum)
@@ -8090,6 +8113,7 @@ end
 local function resetRun()
     table.clear(scriptErrors.retries)
     if modules.idleClick then modules.idleClick.stop() end
+    if modules.gameSettings and modules.gameSettings.cleanup then pcall(modules.gameSettings.cleanup) end
     if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current = nil
     releaseInputs()
