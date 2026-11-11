@@ -100,11 +100,8 @@ local CONFIG = {
         },
     },
     HotbarUpgrade = {
-        DamageTargetLevel = 130,
+        DamageTargetLevel = 200,
         IdentitySettleTime = 0.2,
-        Placement = {
-            TeleportDelay = 0.35, KeyHold = 0.05, EquipDelay = 0.3, AfterPromptDelay = 0.6,
-        },
     },
     Units = {
         SequenceCooldown = 5 * 60,
@@ -772,6 +769,10 @@ local function pause(seconds)
 end
 
 local function waitUntil(test, _timeout, message, retryAction)
+    local token = runScope.threads[coroutine.running()]
+    local fastPoll = token and (activeStage == "hotbarUpgrade" or activeStage == "mutation"
+        or activeStage == "upgradingUnit" or activeStage == "upgradingOldUnit")
+    local pollInterval = fastPoll and 0.05 or 0.5
     local reportRetry = newRetryMonitor(message or "Waiting for an operation to complete")
     local nextRetry = os.clock() + CONFIG.General.RetryInterval
     local problem
@@ -786,7 +787,7 @@ local function waitUntil(test, _timeout, message, retryAction)
             nextRetry = os.clock() + CONFIG.General.RetryInterval
         end
         reportRetry(problem)
-        pause(0.5)
+        pause(pollInterval)
     end
 end
 
@@ -1609,7 +1610,7 @@ Unlimited Best Pickaxe bypasses the saved limit for the highest unlocked pickaxe
 Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+4 Events Board; Ctrl+5 Mailbox; Ctrl+6 Trial. Rolling/teleport shortcuts turn Master OFF and are ignored while typing.
 
 HOTBAR UPGRADES
-Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Place each selected copy, check its identity, upgrade Damage toward the configured target and Speed/Mining to their available maxima, then pick it up before the next copy. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
+Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Use the same UpgradePart teleport and placement/pickup timing as Units, the Mutation stage panel opener, and the Upgrade Unit Stats session. Place each selected copy, check its identity, and mutate it to Unreal. Click Stats without closing the unit panel, then read Damage, Speed, and Mining levels. Upgrade only stats below their goals: Damage to the configured target and Speed/Mining to their available maxima. Confirm stable Unreal on both the current holder Variant and mutation panel before Stats. Before pickup, verify the holder is still stably Unreal and all three levels meet their goals; reroll the same unit if its mutation changed. If a returned unit leaves a multi-copy stack unchanged, continue other selected slots but report remaining indistinguishable copies as incomplete rather than counting repeated checks as new units. A unit already at Unreal with all upgrade goals met completes only its own check; continue through every remaining selected hotbar slot before reporting the batch finished. Before selecting each hotbar unit, including placement retries, set MineGui.HotbarFrame.Visible=true directly. If HotbarFrame or its slot container is missing, wait for it to load and enable Visible; do not open inventory to restore the hotbar. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
         sell = [[ACTIONS
 1. Master waits for your owned plot's ZoneBoardGui and confirms the current zone before running stages. There is no separate game-load checker.
 2. Teleport to your plot, wait, retry ChestFrame.Visible=true once per second until the chest UI is visible, collect the plot chest, and close it with Visible=false.
@@ -5917,7 +5918,44 @@ local function densityReady(zoneId)
     local core, _, reason = upgradeTargets(zoneId, displayed)
     return core ~= nil, reason
 end
-local function mutateHotbarUnitToUnreal(slot, plot, checkTarget, report)
+local function readHotbarHolderMutation(slot, plot, checkTarget)
+    checkPlot(plot)
+    checkTarget(slot, true)
+    local pad = slot.holder:FindFirstChild("Pad")
+    local info = pad and pad:FindFirstChild("CrewInfo")
+    local bg = info and info:FindFirstChild("BG")
+    local variant = bg and bg:FindFirstChild("Variant")
+    if not variant or not (variant:IsA("TextLabel") or variant:IsA("TextButton") or variant:IsA("TextBox")) then return nil end
+    local text = variant.Text:gsub("<[^>]*>", ""):match("^%s*(.-)%s*$")
+    if text == "" then return nil end
+    return normalize(text)
+end
+local function verifyHotbarUnitUnreal(slot, plot, checkTarget, requirePanel)
+    local unreal = assert(ranks.unreal, "CONFIG.Mutation.Priority needs Unreal.")
+    local stableSince
+    local settle = math.max(CONFIG.General.SettleTime, CONFIG.Mutation.PanelSettleTime,
+        CONFIG.Mutation.RescanSettleTime, CONFIG.Mutation.RapidRollSettleTime + CONFIG.Mutation.RapidRollDelay)
+    while true do
+        checkAlive()
+        local holderRank = readHotbarHolderMutation(slot, plot, checkTarget)
+        local panelReady = true
+        if requirePanel then
+            local ok, panelRank = pcall(readFocusedRank)
+            if ok and panelRank < unreal then return false end
+            panelReady = ok and panelRank >= unreal
+        elseif holderRank and holderRank < unreal then
+            return false
+        end
+        if panelReady and holderRank and holderRank >= unreal then
+            stableSince = stableSince or os.clock()
+            if os.clock() - stableSince >= settle then return true end
+        else
+            stableSince = nil
+        end
+        pause(CONFIG.General.WaitPoll)
+    end
+end
+local function mutateHotbarUnitToUnreal(slot, plot, checkTarget, report, keepOpen)
     local unreal = assert(ranks.unreal, "CONFIG.Mutation.Priority needs Unreal.")
     checkTarget(slot, false)
     slot.pad = path(slot.holder, {"Pad"})
@@ -5925,28 +5963,38 @@ local function mutateHotbarUnitToUnreal(slot, plot, checkTarget, report)
     openSlot(slot, plot)
     local rolls = 0
     local reportRetry = newRetryMonitor("M1: rolling mutations until Unreal")
+    -- No elapsed-time or roll-count limit. A single panel reading is not completion.
     while true do
         checkAlive()
         checkTarget(slot, true)
-        if readFocusedRank() >= unreal then break end
-        local panel = assert(mutationPanel(), "Mutation panel is unavailable.")
-        if not canRoll(path(panel, {"Side", "RollButton"})) then
-            error("M1 mutation roll unavailable (red means no money); batch stopped before upgrades.", 0)
+        local readable, current = pcall(readFocusedRank)
+        if readable and current >= unreal then
+            report((slot.hotbarName or slot.expectedName) .. ": confirming stable Unreal on the current holder and mutation panel...")
+            -- Pause new rolls while both live readings settle; resume if the panel drops below Unreal.
+            if verifyHotbarUnitUnreal(slot, plot, checkTarget, true) then break end
+            pause(CONFIG.General.WaitPoll)
+        elseif readable then
+            local panel = assert(mutationPanel(), "Mutation panel is unavailable.")
+            if not canRoll(path(panel, {"Side", "RollButton"})) then
+                error("M1 mutation roll unavailable (red means no money); batch stopped before upgrades.", 0)
+            end
+            report(string.format("%s: mutating to Unreal. Roll: %d", slot.hotbarName or slot.expectedName, rolls + 1))
+            checkTarget(slot, true)
+            checkAlive()
+            getGameEvent():FireServer("MineRollMutation", slot.holder.Name)
+            rolls = rolls + 1
+            reportRetry()
+            pause(CONFIG.Mutation.RapidRollSettleTime)
+            pause(CONFIG.Mutation.RapidRollDelay)
+        else
+            -- Blank/transitional text must not be accepted as a result or consume another roll.
+            pause(CONFIG.General.WaitPoll)
         end
-        report(string.format("%s: mutating to Unreal. Roll: %d", slot.hotbarName or slot.expectedName, rolls + 1))
-        checkTarget(slot, true)
-        checkAlive()
-        getGameEvent():FireServer("MineRollMutation", slot.holder.Name)
-        rolls = rolls + 1
-        reportRetry()
-        pause(CONFIG.Mutation.RapidRollSettleTime)
-        if readFocusedRank() >= unreal then break end
-        pause(CONFIG.Mutation.RapidRollDelay)
     end
     reportRetry(nil, true)
-    closeFocus()
+    if not keepOpen then closeFocus() end
 end
-modules.mutation = {cleanup = cleanupFocus, mutateHotbarUnitToUnreal = mutateHotbarUnitToUnreal, upgradeTargets = upgradeTargets, densityReady = densityReady, observeProgress = function(zoneId, plot)
+modules.mutation = {cleanup = cleanupFocus, mutateHotbarUnitToUnreal = mutateHotbarUnitToUnreal, verifyHotbarUnitUnreal = verifyHotbarUnitUnreal, upgradeTargets = upgradeTargets, densityReady = densityReady, observeProgress = function(zoneId, plot)
 
     return pcall(function()
         local slots = scanNow(plot, requiredSlotCount(zoneId))
@@ -6243,6 +6291,24 @@ local function createUnitStatSession(plot, minimum)
         return {level = current, maximum = maximum, upgradeable = canUpgrade(slot, rowName)}
     end
 
+    local function selectStats(slot)
+        checkTarget(slot, true)
+        ownsStatFocus = true
+        local label = path(statFocusFrame(), {"Tabs", "StatsTab", "Content", "Row", "Label"})
+        local tab = path(statFocusFrame(), {"Tabs", "StatsTab"})
+        local button = label
+        while button ~= tab and not button:IsA("GuiButton") do button = button.Parent end
+        clickButton(button)
+        waitUntil(function()
+            checkTarget(slot, true)
+            return statsPanel()
+        end, CONFIG.Units.ActionTimeout, "Waiting for Stats tab to open.", function()
+            checkTarget(slot, true)
+            clickButton(button)
+        end)
+        pause(settings.PanelSettleTime)
+    end
+
     local function open(slot)
         closeStatFocus()
         checkTarget(slot, false)
@@ -6265,16 +6331,9 @@ local function createUnitStatSession(plot, minimum)
         waitUntil(function() return visible(statFocusFrame()) end,
             CONFIG.Units.ActionTimeout, slot.holder.Name .. ": waiting for unit Stats menu to open.", function() checkTarget(slot, false); fireclickdetector(detector) end)
         pause(settings.PanelSettleTime)
-        local label = path(statFocusFrame(), {"Tabs", "StatsTab", "Content", "Row", "Label"})
-
-        local tab = path(statFocusFrame(), {"Tabs", "StatsTab"})
-        local button = label
-        while button ~= tab and not button:IsA("GuiButton") do button = button.Parent end
-        clickButton(button)
-        waitUntil(statsPanel, CONFIG.Units.ActionTimeout, "Waiting for Stats tab to open.", function() clickButton(button) end)
-        pause(settings.PanelSettleTime)
+        selectStats(slot)
     end
-    return {open = open, readStat = readStat, canUpgrade = canUpgrade, checkTarget = checkTarget}
+    return {open = open, selectStats = selectStats, readStat = readStat, canUpgrade = canUpgrade, checkTarget = checkTarget}
 end
 
 local function unitDamageBatchSize(zoneId)
@@ -6735,8 +6794,21 @@ do
         end
         return ""
     end
+    local function ensureHotbarVisible()
+        return waitUntil(function()
+            local hotbar = find(playerGui, {"MineGui", "HotbarFrame"})
+            if not hotbar or not hotbar:IsA("GuiObject") then return nil end
+            hotbar.Visible = true
+            return find(hotbar, {"Content", "Container"})
+        end, math.huge, "Waiting for HotbarFrame and its slots before selecting a hotbar unit.")
+    end
     local function readEntry(index)
-        local container = find(playerGui, {"MineGui", "HotbarFrame", "Content", "Container"})
+        local hotbar = find(playerGui, {"MineGui", "HotbarFrame"})
+        local container = find(hotbar, {"Content", "Container"})
+        if activeRun == "hotbarUpgrade" and (not hotbar or not hotbar:IsA("GuiObject")
+            or not hotbar.Visible or not container) then
+            container = ensureHotbarVisible()
+        end
         if not container then error("Hotbar is not loaded; press Refresh when it is ready.", 0) end
         local content = find(container, {tostring(index), "ItemFrame", "Content"})
         local name = textOf(content and content:FindFirstChild("ItemName"))
@@ -6760,6 +6832,32 @@ do
             end
             if os.clock() - stableSince >= CONFIG.HotbarUpgrade.IdentitySettleTime then return current end
         end, math.huge, "Hotbar slot " .. index .. " did not settle; refresh and try again.")
+    end
+    local function logHotbarIdentity(index)
+        local hotbarSlot = find(playerGui, {"MineGui", "HotbarFrame", "Content", "Container", tostring(index)})
+        local item = hotbarSlot and hotbarSlot:FindFirstChild("ItemFrame")
+        local content = item and item:FindFirstChild("Content")
+        local fields = {}
+        for _, entry in ipairs({{"Slot", hotbarSlot}, {"ItemFrame", item}, {"Content", content}}) do
+            local label, object = entry[1], entry[2]
+            if object then
+                local ok, attributes = pcall(function() return object:GetAttributes() end)
+                if ok then
+                    for key, value in pairs(attributes) do
+                        if #fields >= 32 then break end
+                        table.insert(fields, label .. ".@" .. key .. "=" .. tostring(value):sub(1, 160))
+                    end
+                end
+                for _, child in ipairs(object:GetChildren()) do
+                    if #fields >= 32 then break end
+                    if child:IsA("ValueBase") then
+                        table.insert(fields, label .. "." .. child.Name .. "=" .. tostring(child.Value):sub(1, 160))
+                    end
+                end
+            end
+        end
+        table.sort(fields)
+        logWarning("[Hotbar identity] slot " .. index .. ": " .. (#fields > 0 and table.concat(fields, "; ") or "No unit identifiers exposed in slot attributes/value fields."))
     end
     local function selectedSlot(expectedName, sourceSlot)
         return {holder = nil, number = 1, expectedName = expectedName, sourceSlot = sourceSlot,
@@ -6846,6 +6944,13 @@ do
         if type(target) ~= "number" or target ~= target or target < 1 or target % 1 ~= 0 or target == math.huge then
             error("HotbarUpgrade.DamageTargetLevel must be a finite positive whole number.", 0)
         end
+        closeStatFocus()
+        local mine = playerGui:FindFirstChild("MineGui")
+        local inventory = mine and mine:FindFirstChild("InventoryFrame")
+        if visible(inventory) then
+            inventory.Visible = false
+            waitUntil(function() return not visible(inventory) end, math.huge, "Waiting for inventory to close before Hotbar Upgrades.", function() inventory.Visible = false end)
+        end
         local queue = {}
         for _, entry in ipairs(entries) do
             if selected[entry.slot] == entry.name then
@@ -6864,7 +6969,7 @@ do
         if not root then error("Character is not ready.", 0) end
         originalRoot, originalCFrame = root, root.CFrame
         local session = createUnitStatSession(plot, 1)
-        local event, completed = getGameEvent(), 0
+        local event, completed, unverifiedCopies = getGameEvent(), 0, 0
         local function prompt()
             checkPlot(plot)
             if holder.Parent ~= plot:FindFirstChild("Holders") then error("M1 changed during the batch.", 0) end
@@ -6919,10 +7024,9 @@ do
             if not player.Character or not root:IsDescendantOf(player.Character) then
                 error("Character changed during M1 placement/pickup.", 0)
             end
-            local base = holder:FindFirstChild("Pad")
-            if not base or not base:IsA("BasePart") then base = holder:FindFirstChild("UpgradePart") end
-            if not base or not base:IsA("BasePart") then base = holder:FindFirstChildWhichIsA("BasePart") end
-            if not base then error("M1 has no placement base.", 0) end
+            if holder.Parent ~= plot:FindFirstChild("Holders") then error("M1 changed during the batch.", 0) end
+            local upgrade = path(holder, {"UpgradePart"})
+            if not upgrade:IsA("BasePart") then error("M1 UpgradePart is not a BasePart.", 0) end
             local offset = Vector3.zero
             if isRetry then
                 local angle = math.random(0, 359)
@@ -6931,73 +7035,78 @@ do
                 local radians = math.rad(angle)
                 offset = Vector3.new(math.cos(radians), 0, math.sin(radians))
             end
-            root.CFrame = CFrame.new(base.Position + Vector3.new(0, 3, 0) + offset, base.Position)
+            root.CFrame = CFrame.new(upgrade.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, upgrade.Position)
             root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-            pause(CONFIG.HotbarUpgrade.Placement.TeleportDelay)
+            pause(CONFIG.Units.TeleportDelay)
+            checkPlot(plot)
+            if not player.Character or not root:IsDescendantOf(player.Character) then
+                error("Character changed during M1 placement/pickup.", 0)
+            end
         end
         local function placeIntoM1(entry, copy)
             closeStatFocus()
-            pause(0.2)
-            moveToM1()
             if waitForM1Action() ~= "place" then error("M1 must be empty before placing the next selected copy.", 0) end
-            if UserInputService:GetFocusedTextBox() then error("Leave the text field before placing units.", 0) end
-            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-            if humanoid then humanoid:UnequipTools() end
             local source = readStableEntry(entry.slot)
             if source.name ~= entry.name or source.count == 0 then
                 error("Selected hotbar slot " .. entry.slot .. " changed before placement; refresh and select again.", 0)
             end
             local keyName = CONFIG.Units.HotbarKeys[entry.slot]
             if not keyName or not Enum.KeyCode[keyName] then error("Selected hotbar slot has no number key.", 0) end
-            report(string.format("Placing slot %d: %s (%d/%d) in M1...", entry.slot, entry.name, copy, entry.count))
-            checkAlive()
-            heldKey = Enum.KeyCode[keyName]
-            VIM:SendKeyEvent(true, heldKey, false, game)
-            pause(CONFIG.HotbarUpgrade.Placement.KeyHold)
-            VIM:SendKeyEvent(false, heldKey, false, game)
-            heldKey = nil
-            pause(CONFIG.HotbarUpgrade.Placement.EquipDelay)
-            local current = waitUntil(function()
-                local value = prompt()
-                if action() ~= "place" then error("M1 occupancy changed before placement; stopped.", 0) end
-                return value.Enabled and value
-            end, math.huge, "M1 placement prompt did not become available.", function()
-                if action() == "place" then moveToM1(true) end
-            end)
-            local beforePrompt = readStableEntry(entry.slot)
-            if beforePrompt.name ~= entry.name or beforePrompt.count ~= source.count then
-                error("Selected hotbar slot changed while equipping; stopped before placement.", 0)
-            end
-            checkAlive()
-            heldPrompt = current
-            current:InputHoldBegin()
-            pause(math.max(current.HoldDuration or 0, 0.05))
-            releaseInputs()
-            pause(CONFIG.HotbarUpgrade.Placement.AfterPromptDelay)
-            waitUntil(function()
+            local function placementConfirmed()
                 if action() ~= "pick up" then return nil end
                 local remaining = readEntry(entry.slot)
-
-                return remaining.name == "" or remaining.name == entry.name and remaining.count < source.count
-            end, math.huge, "M1: waiting for placement and consumption of the selected hotbar copy.", function()
+                return action() == "pick up" and (remaining.name == ""
+                    or remaining.name == entry.name and remaining.count < source.count)
+            end
+            local function activatePlacement(isRetry)
+                closeStatFocus()
+                moveToM1(isRetry)
                 if action() ~= "place" then return end
-                local remaining = readEntry(entry.slot)
-                if remaining.name ~= entry.name or remaining.count ~= source.count then return end
-                moveToM1(true)
+                -- Show the hotbar before validating and selecting this copy.
+                local beforeEquip = readStableEntry(entry.slot)
                 if action() ~= "place" then return end
-                remaining = readEntry(entry.slot)
-                if remaining.name ~= entry.name or remaining.count ~= source.count then return end
-                local retryPrompt = prompt()
-                if retryPrompt.Enabled then
-                    heldPrompt = retryPrompt
-                    retryPrompt:InputHoldBegin()
-                    pause(math.max(retryPrompt.HoldDuration or 0, 0.05))
-                    releaseInputs()
+                if beforeEquip.name ~= entry.name or beforeEquip.count ~= source.count then
+                    error("Selected hotbar slot changed before equipping; stopped before placement.", 0)
                 end
+                if UserInputService:GetFocusedTextBox() then error("Leave the text field before placing units.", 0) end
+                local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+                if humanoid then humanoid:UnequipTools() end
+                pause(CONFIG.Units.EquipSlotDelay)
+                if action() ~= "place" then return end
+                report(string.format("Placing slot %d: %s (%d/%d) in M1...", entry.slot, entry.name, copy, entry.count))
+                ensureHotbarVisible()
+                local beforeKey = readEntry(entry.slot)
+                if action() ~= "place" then return end
+                if beforeKey.name ~= entry.name or beforeKey.count ~= source.count then
+                    error("Selected hotbar slot changed before equipping; stopped before placement.", 0)
+                end
+                checkAlive()
+                heldKey = Enum.KeyCode[keyName]
+                VIM:SendKeyEvent(true, heldKey, false, game)
+                pause(CONFIG.Units.PlacementKeyHold)
+                VIM:SendKeyEvent(false, heldKey, false, game)
+                heldKey = nil
+                pause(CONFIG.Units.EquipSlotDelay)
+                local beforePrompt = readStableEntry(entry.slot)
+                if action() ~= "place" then return end
+                if beforePrompt.name ~= entry.name or beforePrompt.count ~= source.count then
+                    error("Selected hotbar slot changed while equipping; stopped before placement.", 0)
+                end
+                local current = prompt()
+                if not current.Enabled then return end
+                checkAlive()
+                heldPrompt = current
+                current:InputHoldBegin()
+                pause(math.max(current.HoldDuration or 0, CONFIG.Units.PlacementMinimumHold))
+                releaseInputs()
+                pause(CONFIG.Units.PlacementDelay)
+            end
+            activatePlacement(false)
+            waitUntil(placementConfirmed, math.huge, "M1: waiting for placement and consumption of the selected hotbar copy.", function()
+                if action() == "place" then activatePlacement(true) end
             end)
             local slot = selectedSlot(nil, entry.slot)
             slot.holder, slot.hotbarName = holder, entry.name
-
             slot.expectedName = waitForDisplayedUnit(plot, path(plot, {"Holders"}), slot)
             return slot
         end
@@ -7068,52 +7177,77 @@ do
                 report(string.format("%s: %s %d -> %d", slot.hotbarName or slot.expectedName, stat, before.level, cap))
                 session.checkTarget(slot, true)
                 checkAlive()
-                event:FireServer("MineUpgradeCharacter", "M1", stat)
+                event:FireServer("MineUpgradeCharacter", slot.holder.Name, stat)
                 pause(math.max(CONFIG.Units.UpgradeRequestDelays[stat], CONFIG.Units.StatUpgrade.PanelSettleTime))
                 local after
                 waitUntil(function()
                     after = session.readStat(slot, row)
-                    return after.level > before.level
+                    return after.level > before.level or not after.upgradeable
                 end, math.huge, "M1: waiting for " .. stat .. " level response.", function()
                     session.checkTarget(slot, true)
                     local latest = session.readStat(slot, row)
                     if latest.level <= before.level and latest.upgradeable then
-                        event:FireServer("MineUpgradeCharacter", "M1", stat)
+                        event:FireServer("MineUpgradeCharacter", slot.holder.Name, stat)
                     end
                 end)
                 before = after
             end
             return before
         end
-        closeStatFocus()
-        local mine = playerGui:FindFirstChild("MineGui")
-        local inventory = mine and mine:FindFirstChild("InventoryFrame")
-        if visible(inventory) then
-            inventory.Visible = false
-            waitUntil(function() return not visible(inventory) end, math.huge, "Waiting for inventory to close before Hotbar Upgrades.", function() inventory.Visible = false end)
-        end
-        for _, entry in ipairs(queue) do
+        for queueIndex, entry in ipairs(queue) do
+            report(string.format("Checking selected hotbar slot %d (%d/%d)...", entry.slot, queueIndex, #queue))
+            -- Bound this slot by its original copy count, even if a checked unit returns to the same stack.
             for copy = 1, entry.count do
                 checkAlive()
                 local current = readStableEntry(entry.slot)
-                if current.count == 0 and (current.name == "" or current.name == entry.name) then break end
+                if current.count == 0 and (current.name == "" or current.name == entry.name) then
+                    local remaining = entry.count - copy + 1
+                    unverifiedCopies = unverifiedCopies + remaining
+                    logWarning(string.format("[Hotbar Upgrades] Slot %d became empty with %d original copies still unverified. Continuing other selected slots.", entry.slot, remaining))
+                    break
+                end
                 if current.name ~= entry.name then return "Stopped: selected hotbar slot " .. entry.slot .. " changed. Completed " .. completed .. " units." end
                 clearM1()
 
                 current = readStableEntry(entry.slot)
                 if current.name ~= entry.name or current.count == 0 then return "Stopped: selected hotbar slot " .. entry.slot .. " changed. Completed " .. completed .. " units." end
                 local slot = placeIntoM1(entry, copy)
-                modules.mutation.mutateHotbarUnitToUnreal(slot, plot, session.checkTarget, report)
-                session.open(slot)
-                pause(0.3)
+                modules.mutation.mutateHotbarUnitToUnreal(slot, plot, session.checkTarget, report, true)
+                session.selectStats(slot)
                 while true do
-                    upgradeTo(slot, "Speed")
-                    upgradeTo(slot, "MineSpeed")
+                    -- Check every stat after mutation and before upgrading or allowing pickup.
                     local damage = session.readStat(slot, "Damage")
-                    if damage.level >= target then break end
-                    if damage.level >= damage.maximum then error("M1 Damage maximum is below the configured target; batch stopped.", 0) end
-
-                    upgradeTo(slot, "Damage", damage.level + 1)
+                    local speed = session.readStat(slot, "Speed")
+                    local mining = session.readStat(slot, "Mining")
+                    if damage.level >= target and speed.level >= speed.maximum
+                        and mining.level >= mining.maximum then
+                        if modules.mutation.verifyHotbarUnitUnreal(slot, plot, session.checkTarget, false) then
+                            damage = session.readStat(slot, "Damage")
+                            speed = session.readStat(slot, "Speed")
+                            mining = session.readStat(slot, "Mining")
+                            if damage.level >= target and speed.level >= speed.maximum
+                                and mining.level >= mining.maximum then
+                                report(string.format("Verified %s: Unreal; Damage %d/%d; Speed %d/%d; Mining %d/%d.",
+                                    slot.hotbarName or slot.expectedName, damage.level, target,
+                                    speed.level, speed.maximum, mining.level, mining.maximum))
+                                break
+                            end
+                        else
+                            report((slot.hotbarName or slot.expectedName) .. ": mutation is below Unreal; returning to Mutation before pickup...")
+                            modules.mutation.mutateHotbarUnitToUnreal(slot, plot, session.checkTarget, report, true)
+                            session.selectStats(slot)
+                        end
+                    end
+                    if speed.level < speed.maximum then upgradeTo(slot, "Speed") end
+                    if mining.level < mining.maximum then upgradeTo(slot, "MineSpeed") end
+                    damage = session.readStat(slot, "Damage")
+                    if damage.level < target then
+                        if damage.level >= damage.maximum then error("M1 Damage maximum is below the configured target; batch stopped.", 0) end
+                        upgradeTo(slot, "Damage", damage.level + 1)
+                    else
+                        -- Damage is ready; keep this copy in M1 until both other stats catch up.
+                        pause(CONFIG.Units.StatUpgrade.PanelSettleTime)
+                    end
                 end
                 pause(CONFIG.Units.StatUpgrade.BeforeExitDelay)
                 closeStatFocus()
@@ -7125,12 +7259,23 @@ do
                 if nextEntry.name ~= "" and nextEntry.name ~= entry.name then
                     return "Stopped: selected hotbar slot " .. entry.slot .. " changed. Completed " .. completed .. " units."
                 end
-                if nextEntry.name == entry.name and nextEntry.count >= current.count then
-                    return "Stopped: hotbar stack did not decrease after pickup. Completed " .. completed .. " units."
+                if nextEntry.name == entry.name and nextEntry.count > current.count then
+                    error("Hotbar stack grew unexpectedly after pickup; remaining originals are unverified.", 0)
+                end
+                if nextEntry.name == entry.name and nextEntry.count == current.count and copy < entry.count then
+                    -- Name/count cannot prove the next selection is a different original copy.
+                    local remaining = entry.count - copy
+                    unverifiedCopies = unverifiedCopies + remaining
+                    logWarning(string.format("[Hotbar Upgrades] Slot %d: %d stacked copies remain unverified because the checked unit returned to the same stack. Continuing other selected slots.", entry.slot, remaining))
+                    logHotbarIdentity(entry.slot)
+                    break
                 end
             end
         end
-        return string.format("Finished %d units: Speed/Mining max; Damage %d.", completed, target)
+        if unverifiedCopies > 0 then
+            error(string.format("Incomplete: verified %d units as Unreal with all upgrade goals met; %d stacked copies could not be distinguished from returned units. Remaining selected slots were checked.", completed, unverifiedCopies), 0)
+        end
+        return string.format("Finished %d verified units across %d selected hotbar slots: Unreal; Speed/Mining max; Damage %d.", completed, #queue, target)
     end
     modules.hotbarUpgrade = {
         page = page, run = runBatch,
