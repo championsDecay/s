@@ -1610,7 +1610,7 @@ Unlimited Best Pickaxe bypasses the saved limit for the highest unlocked pickaxe
 Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+4 Events Board; Ctrl+5 Mailbox; Ctrl+6 Trial. Rolling/teleport shortcuts turn Master OFF and are ignored while typing.
 
 HOTBAR UPGRADES
-Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Use the same UpgradePart teleport and placement/pickup timing as Units, the Mutation stage panel opener, and the Upgrade Unit Stats session. Place each selected copy, check its identity, and mutate it to Unreal. Click Stats without closing the unit panel, then read Damage, Speed, and Mining levels. Upgrade only stats below their goals: Damage to the configured target and Speed/Mining to their available maxima. Confirm stable Unreal on both the current holder Variant and mutation panel before Stats. Before pickup, verify the holder is still stably Unreal and all three levels meet their goals; reroll the same unit if its mutation changed. If a returned unit leaves a multi-copy stack unchanged, continue other selected slots but report remaining indistinguishable copies as incomplete rather than counting repeated checks as new units. A unit already at Unreal with all upgrade goals met completes only its own check; continue through every remaining selected hotbar slot before reporting the batch finished. Before selecting each hotbar unit, including placement retries, set MineGui.HotbarFrame.Visible=true directly. If HotbarFrame or its slot container is missing, wait for it to load and enable Visible; do not open inventory to restore the hotbar. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
+Refresh and select hotbar entries to process their copies through M1. This is a separate run, outside the nine-stage cycle. Use the same UpgradePart teleport and placement/pickup timing as Units, the Mutation stage panel opener, and the Upgrade Unit Stats session. Place each selected copy, check its identity, and mutate it to Unreal. Click Stats without closing the unit panel, then read Damage, Speed, and Mining levels. Upgrade only stats below their goals: Damage to the configured target and Speed/Mining to their available maxima. Confirm stable Unreal in the current unit Mutation panel before Stats; the floating holder label may be stale and does not block completion. Before pickup, switch to Mutation in the same open UI to verify Unreal again, then return to Stats and verify all three levels. If mutation fell below Unreal, resume rolling in that same UI. If a returned unit leaves a multi-copy stack unchanged, continue other selected slots but report remaining indistinguishable copies as incomplete rather than counting repeated checks as new units. A unit already at Unreal with all upgrade goals met completes only its own check; continue through every remaining selected hotbar slot before reporting the batch finished. Before selecting each hotbar unit, including placement retries, set MineGui.HotbarFrame.Visible=true directly. If HotbarFrame or its slot container is missing, wait for it to load and enable Visible; do not open inventory to restore the hotbar. Stop on changed hotbar identity/count, missing M1 controls, or unavailable upgrades. Retry unconfirmed placement/pickup by returning to M1 with a different random one-stud horizontal offset and rechecking identity, occupancy, and stack consumption before activating its prompt again.]],
         sell = [[ACTIONS
 1. Master waits for your owned plot's ZoneBoardGui and confirms the current zone before running stages. There is no separate game-load checker.
 2. Teleport to your plot, wait, retry ChestFrame.Visible=true once per second until the chest UI is visible, collect the plot chest, and close it with Visible=false.
@@ -5918,35 +5918,47 @@ local function densityReady(zoneId)
     local core, _, reason = upgradeTargets(zoneId, displayed)
     return core ~= nil, reason
 end
-local function readHotbarHolderMutation(slot, plot, checkTarget)
+local function selectHotbarMutationTab(slot, plot, checkTarget)
     checkPlot(plot)
     checkTarget(slot, true)
-    local pad = slot.holder:FindFirstChild("Pad")
-    local info = pad and pad:FindFirstChild("CrewInfo")
-    local bg = info and info:FindFirstChild("BG")
-    local variant = bg and bg:FindFirstChild("Variant")
-    if not variant or not (variant:IsA("TextLabel") or variant:IsA("TextButton") or variant:IsA("TextBox")) then return nil end
-    local text = variant.Text:gsub("<[^>]*>", ""):match("^%s*(.-)%s*$")
-    if text == "" then return nil end
-    return normalize(text)
+    if mutationPanel() then return end
+    local focus = focusFrame()
+    local button
+    -- Use the same button name/text lookup as the regular Mutation opener.
+    for _, object in ipairs(focus:GetDescendants()) do
+        if object:IsA("GuiButton") and visible(object) then
+            local text = object:IsA("TextButton") and object.Text or ""
+            if (object.Name .. " " .. text):lower():find("mutation", 1, true) then
+                button = object
+                break
+            end
+        end
+    end
+    assert(button, "Could not find the Mutation tab in the current unit panel.")
+    clickButton(button)
+    waitUntil(function()
+        checkTarget(slot, true)
+        return mutationPanel()
+    end, nil, "Waiting for the current unit Mutation tab to open.", function()
+        checkTarget(slot, true)
+        clickButton(button)
+    end)
+    pause(CONFIG.Mutation.PanelSettleTime)
 end
-local function verifyHotbarUnitUnreal(slot, plot, checkTarget, requirePanel)
+local function verifyHotbarUnitUnreal(slot, plot, checkTarget, alreadyOnMutation)
     local unreal = assert(ranks.unreal, "CONFIG.Mutation.Priority needs Unreal.")
+    if not alreadyOnMutation then selectHotbarMutationTab(slot, plot, checkTarget) end
     local stableSince
     local settle = math.max(CONFIG.General.SettleTime, CONFIG.Mutation.PanelSettleTime,
         CONFIG.Mutation.RescanSettleTime, CONFIG.Mutation.RapidRollSettleTime + CONFIG.Mutation.RapidRollDelay)
     while true do
         checkAlive()
-        local holderRank = readHotbarHolderMutation(slot, plot, checkTarget)
-        local panelReady = true
-        if requirePanel then
-            local ok, panelRank = pcall(readFocusedRank)
-            if ok and panelRank < unreal then return false end
-            panelReady = ok and panelRank >= unreal
-        elseif holderRank and holderRank < unreal then
-            return false
-        end
-        if panelReady and holderRank and holderRank >= unreal then
+        checkPlot(plot)
+        checkTarget(slot, true)
+        local readable, current = pcall(readFocusedRank)
+        if readable and current < unreal then return false end
+        if readable and current >= unreal then
+            -- The current panel is authoritative; the floating holder label can remain stale.
             stableSince = stableSince or os.clock()
             if os.clock() - stableSince >= settle then return true end
         else
@@ -5955,12 +5967,16 @@ local function verifyHotbarUnitUnreal(slot, plot, checkTarget, requirePanel)
         pause(CONFIG.General.WaitPoll)
     end
 end
-local function mutateHotbarUnitToUnreal(slot, plot, checkTarget, report, keepOpen)
+local function mutateHotbarUnitToUnreal(slot, plot, checkTarget, report, keepOpen, reusePanel)
     local unreal = assert(ranks.unreal, "CONFIG.Mutation.Priority needs Unreal.")
     checkTarget(slot, false)
     slot.pad = path(slot.holder, {"Pad"})
     slot.detector = path(slot.holder, {"UpgradePart", "UpgradeClick"})
-    openSlot(slot, plot)
+    if reusePanel and visible(focusFrame()) then
+        selectHotbarMutationTab(slot, plot, checkTarget)
+    else
+        openSlot(slot, plot)
+    end
     local rolls = 0
     local reportRetry = newRetryMonitor("M1: rolling mutations until Unreal")
     -- No elapsed-time or roll-count limit. A single panel reading is not completion.
@@ -5969,8 +5985,8 @@ local function mutateHotbarUnitToUnreal(slot, plot, checkTarget, report, keepOpe
         checkTarget(slot, true)
         local readable, current = pcall(readFocusedRank)
         if readable and current >= unreal then
-            report((slot.hotbarName or slot.expectedName) .. ": confirming stable Unreal on the current holder and mutation panel...")
-            -- Pause new rolls while both live readings settle; resume if the panel drops below Unreal.
+            report((slot.hotbarName or slot.expectedName) .. ": confirming stable Unreal in the current mutation panel...")
+            -- Stop new rolls while the current result settles; resume only if it drops below Unreal.
             if verifyHotbarUnitUnreal(slot, plot, checkTarget, true) then break end
             pause(CONFIG.General.WaitPoll)
         elseif readable then
@@ -7222,6 +7238,7 @@ do
                     if damage.level >= target and speed.level >= speed.maximum
                         and mining.level >= mining.maximum then
                         if modules.mutation.verifyHotbarUnitUnreal(slot, plot, session.checkTarget, false) then
+                            session.selectStats(slot)
                             damage = session.readStat(slot, "Damage")
                             speed = session.readStat(slot, "Speed")
                             mining = session.readStat(slot, "Mining")
@@ -7234,7 +7251,7 @@ do
                             end
                         else
                             report((slot.hotbarName or slot.expectedName) .. ": mutation is below Unreal; returning to Mutation before pickup...")
-                            modules.mutation.mutateHotbarUnitToUnreal(slot, plot, session.checkTarget, report, true)
+                            modules.mutation.mutateHotbarUnitToUnreal(slot, plot, session.checkTarget, report, true, true)
                             session.selectStats(slot)
                         end
                     end
