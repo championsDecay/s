@@ -827,7 +827,12 @@ modules.gameSettings = {cleanup = closeSettingsFrame, apply = function(checkCurr
             setting.section, setting.option, "Content"}) do
             content = content and content:FindFirstChild(name)
         end
-        local color = content and content:GetAttribute("realcolor")
+        local color
+        if activeRun == "master" then
+            color = content and content:IsA("GuiObject") and content.BackgroundColor3
+        else
+            color = content and content:GetAttribute("realcolor")
+        end
         if typeof(color) ~= "Color3" then return nil end
         local r = math.floor(color.R * 255 + 0.5)
         local g = math.floor(color.G * 255 + 0.5)
@@ -840,7 +845,7 @@ modules.gameSettings = {cleanup = closeSettingsFrame, apply = function(checkCurr
         return waitUntil(function()
             check()
             return readState(setting)
-        end, nil, "Reading live game setting " .. setting.name .. " realcolor")
+        end, nil, "Reading live game setting " .. setting.name .. (activeRun == "master" and " BackgroundColor3" or " realcolor"))
     end
     local event, toggled = nil, 0
     for _, setting in ipairs(settings) do
@@ -856,7 +861,7 @@ modules.gameSettings = {cleanup = closeSettingsFrame, apply = function(checkCurr
                 if status then status.Text = "Setting " .. setting.name .. (setting.enabled and " ON" or " OFF") end
                 event:FireServer("ToggleSetting", setting.name)
                 toggled = toggled + 1
-                -- A delayed reply must not cause another toggle that undoes the first.
+                -- Re-read the live state before any retry to avoid undoing a confirmed setting.
                 local operation = "Confirming game setting " .. setting.name .. (setting.enabled and " ON" or " OFF")
                 if activeRun == "master" then
                     local reportRetry = newRetryMonitor(operation)
@@ -879,6 +884,16 @@ modules.gameSettings = {cleanup = closeSettingsFrame, apply = function(checkCurr
                             pause(1)
                             closeSettingsFrame()
                             check()
+                        end
+                        local latest = readState(setting)
+                        if latest and latest.enabled ~= setting.enabled then
+                            event = getGameEvent()
+                            check()
+                            latest = readState(setting)
+                            if latest and latest.enabled ~= setting.enabled then
+                                event:FireServer("ToggleSetting", setting.name)
+                                toggled = toggled + 1
+                            end
                         end
                         pause(CONFIG.General.WaitPoll)
                     end
@@ -1589,7 +1604,7 @@ Run enabled stages in the configured order. Each stage button can also run its s
 
 Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Waiting for ZoneBoardGui and standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content realcolor is (38, 148, 84), and turn NightMode ON when its Content realcolor is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, alternate every failed settings confirmation with a settings-frame refresh: set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then check the setting again until confirmed. Do not resend the setting toggle while waiting. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs once, after the first successful Sell stage. Other-plot/weather cleanup also starts after Sell. If Sell is disabled or fails, automatic cleanup waits until Sell succeeds. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content.BackgroundColor3 is (38, 148, 84), and turn NightMode ON when its Content.BackgroundColor3 is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, read each setting Content.BackgroundColor3 and send a toggle request if it differs from the desired state. If confirmation fails, set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then re-read and resend only while the setting is still wrong. Repeat until all five settings are confirmed. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs once, after the first successful Sell stage. Other-plot/weather cleanup also starts after Sell. If Sell is disabled or fails, automatic cleanup waits until Sell succeeds. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
 
