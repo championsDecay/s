@@ -44,15 +44,15 @@ local CONFIG = {
         CycleDelay = 20,
     },
     Sell = {
-        TeleportDelay = 1.5,
-        ChestDelay = 1.0,
-        StandDelay = 0.6,
+        TeleportDelay = 0.75,
+        ChestDelay = 0.5,
+        StandDelay = 0.25,
         PromptHold = 0.05,
-        PromptDelay = 0.3,
+        PromptDelay = 0.15,
         ShopTimeout = math.huge,
-        ShopDelay = 0.3,
-        SelectAllDelay = 0.6,
-        SellDelay = 1,
+        ShopDelay = 0.15,
+        SelectAllDelay = 0.3,
+        SellDelay = 0.5,
         ClickDelay = 0.03,
         Poll = 0.02,
         StandDistance = 8,
@@ -1615,7 +1615,7 @@ Refresh and select hotbar entries to process their copies through M1. This is a 
 2. Teleport to your plot, wait, retry ChestFrame.Visible=true once per second until the chest UI is visible, collect the plot chest, and close it with Visible=false.
 3. Teleport to the Hub. Move in front of the sell stand, face the camera toward it, and activate its prompts.
 4. Hold the enabled sell prompt for its required duration, then wait for the game to open the sell window with visible ancestors. Each failed window retry returns the current character to a different random point exactly one horizontal stud from the usual stand position, stops residual movement, faces the stand, and activates its prompt again. Repeat until the window appears or the run is stopped.
-5. Wait for a visible, active Select All button with a usable size, checking its name, text, or child caption. Click it once, wait, then wait for and click the separate Sell button. Wait one second after Sell, then click SellFrame.Close once per second while SellFrame.Visible remains true. Return to your plot only after the frame closes.
+5. Wait for a visible, active Select All button with a usable size, checking its name, text, or child caption. Click it once, wait, then wait for and click the separate Sell button. Wait the configured post-sale delay after Sell, then click SellFrame.Close once per second while SellFrame.Visible remains true. Return to your plot only after the frame closes.
 6. Master closes the sell window after this stage.
 
 CONDITIONS / STOPS
