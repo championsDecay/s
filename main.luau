@@ -7333,8 +7333,7 @@ end
 do
 -- Keep tutorial setup within its own compiler register budget as well.
 (function()
-local CLICK_RANGE = 5
-local TELEPORT_OFFSET = Vector3.new(0, 2, 2)
+local NODE_CLICK_INTERVAL = 0.15
 local plots = workspace:WaitForChild("MineWorld"):WaitForChild("Plots")
 local enabled = false
 local running = false
@@ -7370,20 +7369,6 @@ local function hideMiningUI()
         end
     end
 end
-local savedCamera
-local savedCameraType
-local savedCameraCFrame
-
-local function restoreCamera()
-    if savedCamera then
-        savedCamera.CFrame = savedCameraCFrame
-        savedCamera.CameraType = savedCameraType
-        savedCamera = nil
-        savedCameraType = nil
-        savedCameraCFrame = nil
-    end
-end
-
 local statusLabel = {Text = "Ready"}
 local button = {}
 local function setEnabled(value, message)
@@ -7409,125 +7394,90 @@ local function getTargetPart(target)
 end
 
 local function chooseTarget(nodes)
-    local selected, lowest = nil, math.huge
+    local selected, detector, lowest = nil, nil, math.huge
     for _, child in ipairs(nodes:GetChildren()) do
         local number = tonumber(child.Name:match("^Node(%d+)$"))
-        if number and number < lowest and getTargetPart(child) then
-            selected, lowest = child, number
+        local clickDetector = child:FindFirstChild("NodeClick", true)
+        if number and number < lowest and clickDetector and clickDetector:IsA("ClickDetector") then
+            selected, detector, lowest = child, clickDetector, number
         end
     end
-    return selected
+    return selected, detector
 end
 
 local function mine()
     if closed or running then return end
     clearMiningConnections()
     running = true
-    local plot = nil
-    local nodes = nil
-    local target = nil
-    local targetName = ""
-    local targetRemoved = false
+    local plot, nodes, target, detector
+    local initialCount
+    local countDecreased = false
     local nextClick = 0
 
-    local function targetGone()
-        -- Check the selected path and instance. Keep a removal event latched
-        -- even if the game restores/replaces the node before the next frame.
-        return target and (targetRemoved or nodes:FindFirstChild(targetName) ~= target
-            or target.Parent ~= nodes or plot:FindFirstChild("Nodes") ~= nodes
-            or not target:IsDescendantOf(workspace))
+    local function checkCount()
+        if nodes and initialCount and #nodes:GetChildren() < initialCount then
+            countDecreased = true
+        end
+        return countDecreased
     end
     local function finish()
-        setEnabled(false, "Done: " .. targetName .. " is gone")
+        setEnabled(false, "Done: Nodes child count decreased")
         ignoreUiUntil = 0
-        restoreCamera()
     end
 
     local ok, reason = pcall(function()
+        assert(type(fireclickdetector) == "function", "Tutorial mining requires fireclickdetector")
         hideMiningUI()
         while enabled and not closed do
             checkAlive()
-            if targetGone() then finish(); break end
-
-            if not target then
-                if not plot or plot.Parent ~= plots then
-                    for _, candidate in ipairs(plots:GetChildren()) do
-                        if tonumber(candidate:GetAttribute("OwnerUserId")) == player.UserId then
-                            plot = candidate
-                            break
-                        end
-                    end
-                end
-                nodes = plot and plot:FindFirstChild("Nodes")
-                target = nodes and chooseTarget(nodes)
-                if target then
-                    targetName = target.Name
-                    local function markRemoved()
-                        targetRemoved = true
-                        if enabled and not closed then finish() end
-                    end
-                    miningConnections[#miningConnections + 1] = nodes.ChildRemoved:Connect(function(child)
-                        if child == target then markRemoved() end
-                    end)
-                    miningConnections[#miningConnections + 1] = target.Destroying:Connect(markRemoved)
-                    miningConnections[#miningConnections + 1] = target.AncestryChanged:Connect(function()
-                        if target.Parent ~= nodes then markRemoved() end
-                    end)
-                end
-                if targetGone() then finish(); break end
-                setEnabled(true, target and "Mining: " .. targetName or "Waiting for a node...")
-            end
-
-            if target and os.clock() >= nextClick then
-                local part = getTargetPart(target)
-                local character = player.Character
-                local root = character and character:FindFirstChild("HumanoidRootPart")
-                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-                local camera = workspace.CurrentCamera
-                if part and root and humanoid and humanoid.Health > 0 and camera then
-                    assert(tonumber(plot:GetAttribute("OwnerUserId")) == player.UserId, "Plot ownership changed")
-                    if (root.Position - part.Position).Magnitude > CLICK_RANGE then
-                        root.CFrame = CFrame.lookAt(part.Position + TELEPORT_OFFSET, part.Position)
-                        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
-                    end
-                    if camera ~= savedCamera then
-                        restoreCamera()
-                        savedCamera, savedCameraType, savedCameraCFrame = camera, camera.CameraType, camera.CFrame
-                    end
-                    camera.CameraType = Enum.CameraType.Scriptable
-                    camera.CFrame = CFrame.lookAt(part.Position + Vector3.new(0, 6, 8), part.Position)
-                    game:GetService("RunService").RenderStepped:Wait()
-
-                    if targetGone() then finish(); break end
-                    if enabled and not closed and player.Character == character
-                        and root:IsDescendantOf(character) and humanoid.Health > 0
-                        and part:IsDescendantOf(nodes)
-                        and (root.Position - part.Position).Magnitude <= CLICK_RANGE then
-                        local point, onScreen = camera:WorldToScreenPoint(part.Position)
-                        if onScreen then
-                            setEnabled(true, "Mining: " .. targetName)
-                            ignoreUiUntil = os.clock() + 0.1
-                            local detector = target:FindFirstChild("NodeClick", true)
-                            assert(detector and detector:IsA("ClickDetector"), "Selected node has no NodeClick ClickDetector")
-                            checkAlive()
-                            VIM:SendMouseMoveEvent(point.X, point.Y, game)
-                            VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
-                            VIM:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
-                            nextClick = os.clock() + 0.15
-                        end
+            if not plot then
+                for _, candidate in ipairs(plots:GetChildren()) do
+                    if tonumber(candidate:GetAttribute("OwnerUserId")) == player.UserId then
+                        plot = candidate
+                        break
                     end
                 end
             end
-
-            -- Existence is checked every frame, even between mining clicks.
-            if targetGone() then finish(); break end
+            if plot then
+                assert(plot.Parent == plots and tonumber(plot:GetAttribute("OwnerUserId")) == player.UserId,
+                    "Plot ownership changed")
+                if not nodes then
+                    nodes = plot:FindFirstChild("Nodes")
+                    if nodes then
+                        -- Latch a decrease even if a replacement is added before the next frame.
+                        miningConnections[#miningConnections + 1] = nodes.ChildRemoved:Connect(checkCount)
+                    end
+                end
+                if nodes then
+                    assert(plot:FindFirstChild("Nodes") == nodes and nodes:IsDescendantOf(workspace),
+                        "Nodes folder changed; restart the mining stage")
+                    if checkCount() then finish(); break end
+                    if not target or target.Parent ~= nodes or not detector or not detector.Parent
+                        or not detector:IsDescendantOf(target) then
+                        target, detector = chooseTarget(nodes)
+                        if target and not initialCount then initialCount = #nodes:GetChildren() end
+                    end
+                    if target and detector and os.clock() >= nextClick then
+                        setEnabled(true, "Mining: " .. target.Name)
+                        checkAlive()
+                        pcall(function() fireclickdetector(detector) end)
+                        nextClick = os.clock() + NODE_CLICK_INTERVAL
+                    elseif not target then
+                        setEnabled(true, "Waiting for a node...")
+                    end
+                    if checkCount() then finish(); break end
+                else
+                    setEnabled(true, "Waiting for Nodes...")
+                end
+            else
+                setEnabled(true, "Waiting for your owned plot...")
+            end
             task.wait()
         end
     end)
     restoreMiningUI()
     clearMiningConnections()
     running = false
-    restoreCamera()
     if not ok then
         setEnabled(false, "Mining failed: " .. tostring(reason))
         error(reason, 0)
@@ -7958,9 +7908,9 @@ actions[3] = function()
 end
 actions[1] = function()
     setEnabled(true)
-    mine() -- Stage 1 stops only when its exact target is removed/replaced.
+    mine() -- Stages 1 and 4 stop only after the Nodes child count decreases.
     checkFlow()
-    assert(statusLabel.Text:match("^Done:"), "Mining stage ended without confirming a removed node")
+    assert(statusLabel.Text:match("^Done:"), "Mining stage ended without confirming a Nodes child-count decrease")
 end
 local function teleportButtonTo(destination)
     local reportRetry = newRetryMonitor("Tutorial TeleportButton to " .. destination)
@@ -8013,7 +7963,7 @@ local function teleportButtonTo(destination)
         pause(CONFIG.General.RetryInterval)
     end
 end
-actions[4] = actions[1] -- Fresh mining run with the same chosen-node conditions.
+actions[4] = actions[1] -- Fresh node-count baseline for the second mining stage.
 actions[5] = function()
     teleportButtonTo("Shops")
     local stand = waitFor("Waiting for SellStand", function() return workspace:FindFirstChild("SellStand") end)
@@ -8237,7 +8187,6 @@ modules.tutorial = {
         restoreMiningUI()
         clearMiningConnections()
         releaseInputs()
-        restoreCamera()
     end,
     run = function()
         assert(not preferences.tutorialHidden, "Tutorial has already been completed.")
