@@ -366,7 +366,7 @@ local CONFIG = {
         InitialTab = "master",
         Width = 620, Height = 620,
         ExpandedScale = 0.9,
-        MinimizedWidth = 342, MinimizedHeight = 208,
+        MinimizedWidth = 342, MinimizedHeight = 164,
         Colors = {
             bg = Color3.fromRGB(22, 25, 34), surface = Color3.fromRGB(31, 35, 47),
             muted = Color3.fromRGB(164, 174, 196), text = Color3.fromRGB(235, 240, 250),
@@ -416,7 +416,7 @@ end
 local alive, busy = true, false
 local worker, activeStage, activeRun = nil, nil, nil
 local minimizedActions = {rollEnabled = false, rollWorker = nil, openBusy = false, openWorker = nil}
-local runScope = {current = nil, threads = setmetatable({}, {__mode = "k"}), background = {}}
+local runScope = {current = nil, threads = setmetatable({}, {__mode = "k"}), background = {}, callbacks = {}}
 local connections, shownPrompts = {}, {}
 local heldPrompt, heldKey, mouseHeld = nil, nil, nil
 local originalRoot, originalCFrame = nil, nil
@@ -736,7 +736,14 @@ end
 local colors = CONFIG.UI.Colors
 
 local function connect(signal, callback)
-    local connection = signal:Connect(callback)
+    local connection = signal:Connect(function(...)
+        if not alive then return end
+        local thread = coroutine.running()
+        runScope.callbacks[thread] = true
+        local ok, message = pcall(callback, ...)
+        runScope.callbacks[thread] = nil
+        if not ok then error(message, 0) end
+    end)
     table.insert(connections, connection)
     return connection
 end
@@ -779,7 +786,7 @@ local function waitUntil(test, _timeout, message, retryAction)
             nextRetry = os.clock() + CONFIG.General.RetryInterval
         end
         reportRetry(problem)
-        pause(CONFIG.General.WaitPoll)
+        pause(0.5)
     end
 end
 
@@ -995,42 +1002,83 @@ gui.DisplayOrder = 2147483647 -- Set once at startup; do not monitor other inter
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
 local function cleanup(destroyGui)
-    if not alive then return end
-    logging.flush()
-    if modules.idleClick then modules.idleClick.stop() end
-    if modules.gameSettings and modules.gameSettings.cleanup then pcall(modules.gameSettings.cleanup) end
-    if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
-    runScope.current, minimizedActions.rollToken, minimizedActions.openToken = nil, nil, nil
+    if runScope.cleanupComplete then return true end
+    if runScope.cleanupRunning then return false end
+    runScope.cleanupRunning = true
+    -- Revoke every action before cancelling threads or touching game/UI state.
     alive, busy, dragging = false, false, false
-    if modules.plotCleanup then modules.plotCleanup.stop() end
-    if modules.hotbarUpgrade then modules.hotbarUpgrade.cleanup() end
+    runScope.current, minimizedActions.rollToken, minimizedActions.openToken = nil, nil, nil
+    minimizedActions.rollEnabled, minimizedActions.openBusy = false, false
     touchPointer, dragStart, panelStart = nil, nil, nil
-    for _, connection in ipairs(connections) do connection:Disconnect() end
-    table.clear(connections)
-    if worker and worker ~= coroutine.running() then pcall(task.cancel, worker) end
-    worker = nil
-    for thread in pairs(runScope.background) do pcall(task.cancel, thread) end
-    table.clear(runScope.background)
-    minimizedActions.rollEnabled = false
-    if minimizedActions.rollWorker then pcall(task.cancel, minimizedActions.rollWorker) end
-    minimizedActions.rollWorker = nil
-    minimizedActions.openBusy = false
-    if minimizedActions.openWorker then pcall(task.cancel, minimizedActions.openWorker) end
-    minimizedActions.openWorker = nil
-    releaseInputs()
-    if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
-    if modules.upgrades and modules.upgrades.cleanup then pcall(modules.upgrades.cleanup) end
-    if modules.tutorial then modules.tutorial.cleanup() end
-    if modules.mutation and modules.mutation.cleanup then pcall(modules.mutation.cleanup) end
-    if modules.masterFly then pcall(modules.masterFly.stop) end
-    local unitUpgrade = rawget(modules, "upgradingUnit")
-    if unitUpgrade and unitUpgrade.cleanup then pcall(unitUpgrade.cleanup) end
-    restorePosition()
+    local complete = true
+    local function attempt(name, callback)
+        local ok, result = pcall(callback)
+        if not ok or result == false then
+            complete = false
+            consoleWarn("[Cleanup] " .. name .. ": " .. tostring(ok and "did not complete" or result))
+        end
+        return ok and result ~= false
+    end
+    local currentThread = coroutine.running()
+    local function cancelThread(thread)
+        if not thread or thread == currentThread then return true end
+        return attempt("Cancel worker", function()
+            if coroutine.status(thread) ~= "dead" then task.cancel(thread) end
+        end)
+    end
+    for index = #connections, 1, -1 do
+        local connection = connections[index]
+        if attempt("Disconnect event", function() connection:Disconnect() end) then table.remove(connections, index) end
+    end
+    if cancelThread(worker) then worker = nil end
+    if cancelThread(minimizedActions.rollWorker) then minimizedActions.rollWorker = nil end
+    if cancelThread(minimizedActions.openWorker) then minimizedActions.openWorker = nil end
+    for _, threads in ipairs({runScope.threads, runScope.background, runScope.callbacks}) do
+        for thread in pairs(threads) do
+            if cancelThread(thread) then threads[thread] = nil end
+        end
+    end
+    -- A failing module must not prevent the remaining cleanup steps from running.
+    for _, entry in ipairs({
+        {"plotCleanup", "stop"}, {"masterFly", "stop"}, {"chestRecovery", "cleanup"},
+        {"gameSettings", "cleanup"}, {"hotbarUpgrade", "cleanup"}, {"autoSequence", "cleanup"},
+        {"pickaxe", "cleanupWaiting"}, {"upgrades", "cleanup"},
+        {"mutation", "cleanup"}, {"upgradingUnit", "cleanup"},
+    }) do
+        local module = rawget(modules, entry[1])
+        local callback = module and module[entry[2]]
+        if type(callback) == "function" then attempt(entry[1], callback) end
+    end
+    attempt("Release inputs", releaseInputs)
+    attempt("Close game panels", function()
+        local mine = playerGui:FindFirstChild("MineGui")
+        if not mine then return end
+        for _, name in ipairs({"SellFrame", "PickaxeShopFrame", "SkillTreeFullFrame", "InventoryFrame",
+            "SlotFocusFrame", "ChestFrame", "TrialFrame", "EventsFrameV2", "MailboxFrame"}) do
+            local frame = mine:FindFirstChild(name)
+            if frame and frame:IsA("GuiObject") then
+                attempt("Close " .. name, function() frame.Visible = false end)
+            end
+        end
+    end)
+    -- Restore tutorial mining visibility after all panel-closing cleanup has finished.
+    if modules.tutorial then attempt("tutorial", modules.tutorial.cleanup) end
+    attempt("Restore position", restorePosition)
+    attempt("Flush logs", logging.flush)
     table.clear(shownPrompts)
-    if _G.__AUTOMATION_KILL == unloadScript then _G.__AUTOMATION_KILL = nil end
-    if destroyGui then gui:Destroy() end
+    if _G.__AUTOMATION_KILL == unloadScript then
+        _G.MineHotbarSummary, _G.MineHotbarTotalCount, _G.MineHotbarMatchSummary = nil, nil, nil
+        local densityState = _G.__AUTOMATION_DENSITY_II
+        if type(densityState) == "table" then
+            densityState[tostring(game.GameId) .. ":" .. tostring(player.UserId)] = nil
+        end
+    end
+    if destroyGui then attempt("Destroy UI", function() gui:Destroy() end) end
+    if complete and _G.__AUTOMATION_KILL == unloadScript then _G.__AUTOMATION_KILL = nil end
+    runScope.cleanupComplete, runScope.cleanupRunning = complete, false
+    return complete
 end
-unloadScript = function() cleanup(true) end
+unloadScript = function() return cleanup(true) end
 _G.__AUTOMATION_KILL = unloadScript
 connect(gui.Destroying, function() cleanup(false) end)
 connect(ProximityPromptService.PromptShown, function(prompt) shownPrompts[prompt] = true end)
@@ -1108,28 +1156,56 @@ local minimizedMaster = button(minimizedControls, "Master: OFF", UDim2.fromOffse
 minimizedMaster.Name = "MinimizedMaster"
 minimizedMaster.TextSize = 14
 do
+    local updateStatus = label(minimizedControls, "", UDim2.fromOffset(0, 126), UDim2.new(1, 0, 0, 0), 11)
+    updateStatus.Name, updateStatus.Visible = "MinimizedUpdateStatus", false
+    local currentStatus
+    minimizedActions.getHeight = function()
+        return CONFIG.UI.MinimizedHeight + (updateStatus.Visible and 4 + updateStatus.Size.Y.Offset or 0)
+    end
+    minimizedActions.refreshStatus = function()
+        local text = currentStatus and currentStatus.Text or ""
+        updateStatus.Text = text
+        updateStatus.TextColor3 = currentStatus and currentStatus.TextColor3 or colors.muted
+        updateStatus.Visible = text ~= ""
+        local bounds = game:GetService("TextService"):GetTextSize(text, updateStatus.TextSize,
+            updateStatus.Font, Vector2.new(CONFIG.UI.MinimizedWidth - 16, math.huge))
+        updateStatus.Size = UDim2.new(1, 0, 0, updateStatus.Visible and math.max(16, math.ceil(bounds.Y)) or 0)
+        if minimized then
+            panel.Size = UDim2.fromOffset(CONFIG.UI.MinimizedWidth, minimizedActions.getHeight())
+            resize()
+        end
+    end
+    minimizedActions.newStatus = function(initialText)
+        -- Keep each task's state separate while displaying only its latest update.
+        local state = {Text = "", TextColor3 = colors.muted}
+        local status = setmetatable({}, {
+            __index = state,
+            __newindex = function(_, key, value)
+                state[key] = value
+                if key == "Text" then
+                    currentStatus = state
+                    minimizedActions.refreshStatus()
+                elseif key == "TextColor3" and currentStatus == state then
+                    updateStatus.TextColor3 = value
+                end
+            end,
+        })
+        if initialText and initialText ~= "" then status.Text = initialText end
+        return status
+    end
+end
+do
     local tutorialButton = button(minimizedControls, "Auto complete tutorial", UDim2.new(0.5, 3, 0, 0), UDim2.new(0.5, -3, 0, 32))
     tutorialButton.Name = "AutoCompleteTutorial"
     tutorialButton.TextSize = 13
     tutorialButton.TextWrapped = true
-    local tutorialStatus = label(minimizedControls, "", UDim2.fromOffset(0, 170), UDim2.new(1, 0, 0, 36), 11)
-    tutorialStatus.TextWrapped = true
+    local tutorialStatus = minimizedActions.newStatus("")
     pages.tutorial = {name = "Auto complete tutorial", run = tutorialButton, status = tutorialStatus, runText = "Auto complete tutorial"}
-    minimizedActions.getHeight = function()
-        return CONFIG.UI.MinimizedHeight + (tutorialStatus.Visible and 40 or 0)
-    end
     minimizedActions.refreshTutorial = function()
         tutorialButton.Visible = not preferences.tutorialHidden
         minimizedMaster.Size = UDim2.new(preferences.tutorialHidden and 1 or 0.5, preferences.tutorialHidden and 0 or -3, 0, 32)
-        tutorialStatus.Visible = not preferences.tutorialHidden and tutorialStatus.Text ~= ""
-        if minimized then
-            local height = minimizedActions.getHeight()
-
-            panel.Size = UDim2.fromOffset(CONFIG.UI.MinimizedWidth, height)
-            resize()
-        end
+        minimizedActions.refreshStatus()
     end
-    connect(tutorialStatus:GetPropertyChangedSignal("Text"), minimizedActions.refreshTutorial)
     minimizedActions.hideTutorial = function(zoneId, densityLevel)
         if preferences.tutorialHidden then return end
         local zoneNumber = tonumber(tostring(zoneId):match("^Z(%d+)$"))
@@ -1164,7 +1240,6 @@ connect(title.InputBegan, function(input)
     if not alive or dragging then return end
     local kind = input.UserInputType
     if kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.Touch then return end
-    if modules.idleClick then modules.idleClick.stop() end
     dragging = true
     touchPointer = kind == Enum.UserInputType.Touch and input or nil
     dragStart, panelStart = input.Position, panel.Position
@@ -1205,7 +1280,6 @@ do
     local function setMinimized(value)
         if not alive then return end
         endDrag()
-        if modules.idleClick then modules.idleClick.stop() end
         minimized = value
         local width = minimized and CONFIG.UI.MinimizedWidth or CONFIG.UI.Width
         local height = minimized and minimizedActions.getHeight() or CONFIG.UI.Height
@@ -1230,7 +1304,7 @@ end
 
 do
     local notificationBox = make("TextLabel", minimizedControls, {
-        Name = "MinimizedNotificationBox", Position = UDim2.fromOffset(0, 122), Size = UDim2.new(1, 0, 0, 24),
+        Name = "MinimizedNotificationBox", Position = UDim2.fromOffset(0, 98), Size = UDim2.new(1, 0, 0, 24),
         BackgroundColor3 = colors.idle, BackgroundTransparency = 0, BorderSizePixel = 0, Visible = true,
         Text = "Notifications", Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = colors.text,
         TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, ZIndex = 5,
@@ -1252,90 +1326,7 @@ do
         if notificationBox.Text ~= text then notificationBox.Text = text end
     end
     minimizedActions.refreshNotification()
-end
-
-do
-    local clickArea = button(minimizedControls, "Idle click (2s)", UDim2.new(0.5, 3, 0, 92), UDim2.new(0.5, -3, 0, 26))
-    clickArea.Name, clickArea.TextSize = "MinimizedIdleClickArea", 10
-    clickArea.BackgroundColor3, clickArea.TextColor3 = colors.surface, colors.muted
-    clickArea.AutoButtonColor, clickArea.Selectable, clickArea.Active = false, false, true
-    clickArea.ZIndex = 5
-    pcall(function() clickArea.InputSink = Enum.InputSink.All end)
-    -- Intentionally no action handler: this area only receives the idle clicks.
-    local nextClickAt, pressedPoint, releaseAt, pressedSuccessfully
-    local reportClickFailure = newRetryMonitor("Clicking the minimized UI idle area")
-    local function clickPoint()
-        if not alive or not minimized or not preferences.masterEnabled or dragging
-            or (modules.pickaxe and modules.pickaxe.isWaiting and modules.pickaxe.isWaiting())
-            or not gui.Parent or not gui.Enabled or not panel.Visible
-            or not minimizedControls.Visible or not clickArea.Visible or GuiService.MenuIsOpen then return nil end
-        if not clickArea:IsDescendantOf(panel) then return nil end
-        local camera = workspace.CurrentCamera
-        if not camera then return nil end
-        local inset = GuiService:GetGuiInset()
-        local areaPosition, areaSize = clickArea.AbsolutePosition, clickArea.AbsoluteSize
-        local panelPosition, panelSize = panel.AbsolutePosition, panel.AbsoluteSize
-        local viewport = camera.ViewportSize
-        -- AbsolutePosition and GUI hit testing share inset-relative coordinates.
-        -- Keep a two-pixel margin inside both the dedicated area and the panel.
-        local left = math.max(areaPosition.X + 2, panelPosition.X + 2, 2)
-        local top = math.max(areaPosition.Y + 2, panelPosition.Y + 2, 2)
-        local right = math.min(areaPosition.X + areaSize.X - 2, panelPosition.X + panelSize.X - 2, viewport.X - inset.X - 2)
-        local bottom = math.min(areaPosition.Y + areaSize.Y - 2, panelPosition.Y + panelSize.Y - 2, viewport.Y - inset.Y - 2)
-        if right <= left or bottom <= top then return nil end
-        local x, y = math.round((left + right) * 0.5), math.round((top + bottom) * 0.5)
-        if x < left or x > right or y < top or y > bottom then return nil end
-        -- When the UI is hosted under PlayerGui/CoreGui, also reject covered points.
-        local host = gui.Parent
-        while host and not host:IsA("BasePlayerGui") do host = host.Parent end
-        if host then
-            local hits = host:GetGuiObjectsAtPosition(x, y)
-            local front = hits[1]
-            if not front or (front ~= clickArea and not front:IsDescendantOf(clickArea)) then return nil end
-        end
-        return Vector2.new(x + inset.X, y + inset.Y)
-    end
-    local function releaseClick()
-        if not pressedPoint then return end
-        local point = pressedPoint
-        local function release() VIM:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0) end
-        local ok, reason = pcall(release)
-        if not ok then ok, reason = pcall(release) end
-        if ok then
-            if pressedSuccessfully then reportClickFailure(nil, true) end
-            pressedPoint, releaseAt, pressedSuccessfully = nil, nil, nil
-        else reportClickFailure(reason) end
-    end
-    modules.idleClick = {stop = function()
-        nextClickAt = nil
-        releaseClick()
-    end}
-    connect(game:GetService("RunService").Heartbeat, function()
-        minimizedActions.refreshNotification()
-        local now = os.clock()
-        if pressedPoint then
-            if now >= releaseAt or not alive or not minimized or not preferences.masterEnabled
-                or dragging or not gui.Enabled or not panel.Visible or not minimizedControls.Visible
-                or not clickArea.Visible or GuiService.MenuIsOpen then releaseClick() end
-            return
-        end
-        if not alive or not minimized or not preferences.masterEnabled then nextClickAt = nil; return end
-        if not nextClickAt then nextClickAt = now + 2; return end
-        if now < nextClickAt then return end
-        nextClickAt = now + 2
-        local ok, reason = pcall(function()
-            local point = clickPoint()
-            if not point then return end
-            -- Hold independently of stage inputs; release on a later heartbeat after 0.1s.
-            pressedPoint, releaseAt, pressedSuccessfully = point, now + 0.1, false
-            VIM:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
-            pressedSuccessfully = true
-        end)
-        if not ok then
-            releaseClick()
-            reportClickFailure(reason)
-        end
-    end)
+    connect(game:GetService("RunService").Heartbeat, minimizedActions.refreshNotification)
 end
 
 local stageGuide
@@ -1604,9 +1595,9 @@ Run enabled stages in the configured order. Each stage button can also run its s
 
 Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Waiting for ZoneBoardGui and standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content.BackgroundColor3 is (38, 148, 84), and turn NightMode ON when its Content.BackgroundColor3 is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, read each setting Content.BackgroundColor3 and send a toggle request if it differs from the desired state. If confirmation fails, set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then re-read and resend only while the setting is still wrong. Repeat until all five settings are confirmed. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs once, after the first successful Sell stage. Other-plot/weather cleanup also starts after Sell. If Sell is disabled or fails, automatic cleanup waits until Sell succeeds. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content.BackgroundColor3 is (38, 148, 84), and turn NightMode ON when its Content.BackgroundColor3 is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, read each setting Content.BackgroundColor3 and send a toggle request if it differs from the desired state. If confirmation fails, set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then re-read and resend only while the setting is still wrong. Repeat until all five settings are confirmed. Tutorial Stage 0 performs the same live check. Enabled automatic Workspace cleanup runs when a unit sequence starts, sharing its five-minute cooldown and zone/manual resets. Cleanup failures wait for the next eligible unit sequence. Other-plot/weather cleanup starts after Sell. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
-On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. While Master is ON and the UI is minimized, send a virtual mouse click every two seconds to the dedicated idle-click area inside the panel, holding mouse-down for 0.1 seconds before release. This runs independently of the current stage. A separate visible notification box below the idle-click area turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded. Minimized-area clicks pause while the between-cycle pickaxe shop is active so its purchase clicks cannot overlap.
+On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. The minimized notification box turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded.
 
 Stop, Master OFF, unload, or the relevant shortcuts cancel active work, restore saved positions where available, and release prompts, keys, and focused panels.
 
@@ -1642,7 +1633,7 @@ Outside the max zone, only the highest unlocked ID is considered. At the max zon
 Unavailable file functions, invalid or unreadable count data, a disappearing previously seen file, or unverifiable saves stop purchases. A count saved before a later cancellation or color change remains reserved. Counts represent reserved requests, rather than confirmed inventory purchases.
 
 BETWEEN MASTER CYCLES
-During the cycle delay, open the shop and click visible buy buttons on rows with LayoutOrder 1 then 2 at the configured click interval. These use VirtualInputManager mouse-down/up clicks with a 0.05-second hold, separate from this stage's best-pickaxe limit/count reservation. Close the shop and restore position when the wait ends or is stopped. A shop-wait error uses the rest of the cycle delay. Minimized-area clicks resume afterward; the separate notification box remains active throughout.]],
+During the cycle delay, open the shop and click visible buy buttons on rows with LayoutOrder 1 then 2 at the configured click interval. These use VirtualInputManager mouse-down/up clicks with a 0.05-second hold, separate from this stage's best-pickaxe limit/count reservation. Close the shop and restore position when the wait ends or is stopped. A shop-wait error uses the rest of the cycle delay. The notification box remains active throughout.]],
         upgrades = [[ZONE / DENSITY SCAN
 Read all of your owned plot's ZoneBoard rows in numeric order. ZoneRowN means ZN. Button.Lock.Visible true means locked; false means unlocked. The highest numbered row with its lock hidden is the current zone. Retry missing rows or Lock objects until stable. Set MineGui.SkillTreeFullFrame.Visible to true, then wait for Tree.Canvas and the matching Zone_ZN folder to read Density and Colossus data. The zone still comes from the ZoneBoard. Set Visible to false when finished. Cache the zone ID, folder name, and confirmed Density for the cycle. A changed zone clears the unit-sequence cooldown. The maximum configured zone is the highest numeric Z key in RequiredByZone, with no fixed zone-number limit.
 
@@ -1843,10 +1834,38 @@ do
         refreshing = true
         refresh.Active, refresh.AutoButtonColor = false, false
         refresh.Text = "Refreshing script..."
-        -- Unload the current instance without changing or deleting its preferences cache.
-        unloadScript()
         local ok, message = pcall(function()
-            loadstring(game:HttpGet("https://raw.githubusercontent.com/championsDecay/s/refs/heads/main/main.luau"))()
+            -- Leave disk caches untouched; finish unloading before fetching/executing code.
+            assert(unloadScript(), "Old script cleanup failed; replacement was not started. See [Cleanup] warnings.")
+            local nonce = HttpService:GenerateGUID(false)
+            local function getFresh(url)
+                url = url .. "?refresh=" .. nonce
+                local body
+                if type(request) == "function" then
+                    local response = request({Url = url, Method = "GET", Headers = {
+                        ["Cache-Control"] = "no-cache, no-store", ["Pragma"] = "no-cache",
+                        ["User-Agent"] = "AutomationRefresh", ["Accept"] = "application/vnd.github+json",
+                    }})
+                    local status = type(response) == "table" and tonumber(response.StatusCode)
+                    assert(status and status >= 200 and status < 300,
+                        "GitHub download failed (HTTP " .. tostring(status or "unknown") .. ").")
+                    body = response.Body
+                else
+                    body = game:HttpGet(url)
+                end
+                assert(type(body) == "string" and body:find("%S"), "GitHub returned an empty response.")
+                return body
+            end
+            -- Resolve main first, then pin the download to that exact commit instead of a cached branch URL.
+            local ref = HttpService:JSONDecode(getFresh("https://api.github.com/repos/championsDecay/s/git/ref/heads/main"))
+            local sha = type(ref) == "table" and type(ref.object) == "table" and ref.object.sha
+            assert(type(sha) == "string" and #sha == 40 and sha:match("^%x+$"), "GitHub returned an invalid main commit.")
+            local source = getFresh("https://raw.githubusercontent.com/championsDecay/s/" .. sha .. "/main.luau")
+            local chunk, compileError = loadstring(source, "@github/championsDecay/s/" .. sha .. "/main.luau")
+            assert(chunk, "Updated script did not compile: " .. tostring(compileError))
+            assert(_G.__AUTOMATION_KILL == nil, "Another script started during refresh; replacement was skipped.")
+            consolePrint("[Refresh Script] Loading GitHub commit " .. sha:sub(1, 12))
+            chunk()
         end)
         if not ok then consoleWarn("[Refresh Script] " .. tostring(message)) end
     end)
@@ -1880,7 +1899,7 @@ end
 
 do
     local toggle = masterLayout.setting(masterLayout.automation, "WorkspaceCleanupToggle", "Clean workspace extras",
-        "Once at the first cycle. Manual Run once: minimized panel.")
+        "Runs with the shared unit-sequence cooldown.")
     local function refresh()
         local enabled = CONFIG.General.WorkspaceCleanupEnabled
         toggle.Text = enabled and "ON" or "OFF"
@@ -2379,16 +2398,9 @@ do
         {"Mailbox", {"Mailbox"}, ownPlot = true},
         {"Trial", {"TrialStone", "Plinth1"}, ownPlot = true},
     }) do
-        local buttonIndex = ({4, 2, 3, 1})[index]
-        local shortcut = button(minimizedControls, destination[1], UDim2.new((buttonIndex - 1) / 4, buttonIndex - 1, 0, 64),
-            UDim2.new(1 / 4, -3, 0, 24))
-        shortcut.Name = "Teleport" .. destination[1]:gsub(" ", "")
-        shortcut.TextSize = 11
-        shortcut.TextWrapped = true
-        shortcut.BackgroundColor3 = colors.surface
         local function teleportOnce()
             if not alive then return end
-            if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial") and stopRun then stopRun() end
+            if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence") and stopRun then stopRun() end
             local ok, reason = pcall(function()
                 local parent = destination.ownPlot and getMyPlot() or workspace
                 local target = findPath(parent, destination[2])
@@ -2408,11 +2420,18 @@ do
             end)
             if not ok then logError("Teleport", reason) end
         end
-        connect(shortcut.Activated, teleportOnce)
+        if index == 1 then
+            local shortcut = button(minimizedControls, destination[1], UDim2.new(0.5, 3, 0, 36), UDim2.new(0.5, -3, 0, 28))
+            shortcut.Name = "Teleport" .. destination[1]:gsub(" ", "")
+            shortcut.TextSize = 12
+            shortcut.TextWrapped = true
+            shortcut.BackgroundColor3 = colors.surface
+            connect(shortcut.Activated, teleportOnce)
+        end
         if teleportKeys[index] then hotkeyActions[teleportKeys[index]] = teleportOnce end
     end
 
-    local rollToggle = button(minimizedControls, "Enchant Roll: OFF", UDim2.fromOffset(0, 36), UDim2.new(0.5, -3, 0, 24))
+    local rollToggle = button(minimizedControls, "Enchant Roll: OFF", UDim2.fromOffset(0, 68), UDim2.new(0.5, -3, 0, 26))
     rollToggle.Name = "EnchantRollToggle"
     rollToggle.TextSize = 11
     rollToggle.TextWrapped = true
@@ -2451,13 +2470,13 @@ do
     minimizedActions.setRollEnabled = setRollEnabled
     local function toggleRoll()
         if not alive then return end
-        if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial") and stopRun then stopRun() end
+        if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence") and stopRun then stopRun() end
         setRollEnabled(not minimizedActions.rollEnabled)
     end
     connect(rollToggle.Activated, toggleRoll)
     hotkeyActions[Enum.KeyCode.Two] = toggleRoll
 
-    local openCrates = button(minimizedControls, "Open crates", UDim2.new(0.5, 3, 0, 36), UDim2.new(0.5, -3, 0, 24))
+    local openCrates = button(minimizedControls, "Open crates", UDim2.new(0.5, 3, 0, 68), UDim2.new(0.5, -3, 0, 26))
     openCrates.Name = "ColossusOpenButton"
     openCrates.TextSize = 11
     openCrates.TextWrapped = true
@@ -2495,7 +2514,7 @@ do
         openCrates.Text = "Opening Crates"
         openCrates.Active, openCrates.AutoButtonColor = false, false
         openCrates.BackgroundColor3 = colors.idle
-        if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial") and stopRun then stopRun() end
+        if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence") and stopRun then stopRun() end
         setRollEnabled(false)
         if not actionIsCurrent(token) then return end
         minimizedActions.openWorker = task.defer(function()
@@ -2619,17 +2638,11 @@ do
     }
 end
 
--- Automatic Workspace cleanup runs once after the first successful Master Sell stage.
--- It never polls or retries automatically; Run once remains a separate manual pass.
+-- Automatic Workspace cleanup shares the unit sequence's cooldown and resets.
+-- Each eligible sequence gets one attempt; there is no separate cleanup timer.
 -- Other MinePlots/weather use the independent automatic plotCleanup worker above.
 do
-    local runOnce = button(minimizedControls, "Cleanup: Run once", UDim2.fromOffset(0, 92), UDim2.new(0.5, -3, 0, 26))
-    runOnce.Name, runOnce.TextSize = "WorkspaceCleanupRunOnce", 12
-    local status = label(minimizedControls, "Keeps script paths and prompts. Rejoin to restore.", UDim2.fromOffset(0, 150), UDim2.new(1, 0, 0, 16), 10)
-    status.Name, status.TextWrapped = "WorkspaceCleanupStatus", false
-    status.TextTruncate = Enum.TextTruncate.AtEnd
-    local running, completed = false, false
-    local automaticAttempted = false
+    local status = minimizedActions.newStatus("Keeps script paths and prompts. Rejoin to restore.")
 
 -- MAINTENANCE: Keep every Workspace path used anywhere in the script, including
 -- future stage paths. Add new paths here or to PLOT_KEEP before using them.
@@ -2772,10 +2785,9 @@ end
 
     local function refreshAutomaticStatus()
         pages.master.refreshWorkspaceCleanupToggle()
-        if automaticAttempted then return end
         status.Text = CONFIG.General.WorkspaceCleanupEnabled
-            and "Auto cleanup: once after the first successful Master Sell stage."
-            or "Auto cleanup: OFF. Run once is available until used."
+            and "Auto cleanup: shares the unit-sequence cooldown."
+            or "Auto cleanup: OFF."
         status.TextColor3 = colors.muted
     end
     modules.workspaceCleanup = {
@@ -2786,9 +2798,8 @@ end
             CONFIG.General.WorkspaceCleanupEnabled = true
             refreshAutomaticStatus()
         end,
-        afterSell = function()
-            if not alive or automaticAttempted or not CONFIG.General.WorkspaceCleanupEnabled then return end
-            automaticAttempted = true
+        runWithSequence = function()
+            if not alive or not CONFIG.General.WorkspaceCleanupEnabled then return end
             local ok, removed, failed = pcall(scan, true)
             if not alive then return end
             if ok and failed == 0 then
@@ -2796,42 +2807,16 @@ end
                 status.TextColor3 = colors.success
                 logInfo("Workspace Cleanup", status.Text)
             else
-                status.Text = "Auto cleanup incomplete. Use Run once to retry."
+                status.Text = "Auto cleanup incomplete. Will retry with the next unit sequence."
                 status.TextColor3 = colors.error
                 local reason = ok and string.format("%d branches could not be removed.", failed) or tostring(removed)
                 logWarning("[Workspace Cleanup] " .. reason)
             end
         end,
     }
-
-    connect(runOnce.Activated, function()
-        if not alive or running or completed then return end
-        running = true
-        runOnce.Active, runOnce.AutoButtonColor = false, false
-        runOnce.Text = "Cleanup: Running..."
-        local ok, removed, failed = pcall(scan)
-        running = false
-        if not alive then return end
-        if ok and failed == 0 then
-            completed = true
-            runOnce.Text = "Cleanup: Done"
-            runOnce.BackgroundColor3 = colors.idle
-            status.Text = string.format("Removed %d branches. Rejoin to restore.", removed)
-            status.TextColor3 = colors.success
-            logInfo("Workspace Cleanup", status.Text)
-        else
-            runOnce.Active, runOnce.AutoButtonColor = true, true
-            runOnce.Text = "Cleanup: Retry"
-            status.Text = "Cleanup incomplete. Try again when your plot is ready."
-            status.TextColor3 = colors.error
-            local reason = ok and string.format("Removed %d branches; %d failed.", removed, failed) or tostring(removed)
-            footer.Text = "Workspace cleanup: " .. reason
-            logWarning("[Workspace Cleanup] " .. reason)
-        end
-    end)
 end
 
--- Check once per Master cycle, after cleanup on the first cycle.
+-- Check rewards once per Master cycle.
 -- Each pass uses its own toggles and can finish across Master stops.
 do
     local running = false
@@ -2874,17 +2859,17 @@ do
         runCycle = function()
             if running or not alive then return end
             running = true
-            task.defer(function()
-                local thread = coroutine.running()
-                runScope.background[thread] = true
+            local thread = task.defer(function()
+                if not alive then return end
                 local ok, message = pcall(function()
                     claimSpin()
                     redeemCodes()
                 end)
-                runScope.background[thread] = nil
+                runScope.background[coroutine.running()] = nil
                 running = false
                 if not ok and alive then logWarning("[Daily Rewards] " .. tostring(message)) end
             end)
+            runScope.background[thread] = true
         end,
     }
 end
@@ -3130,6 +3115,7 @@ local function beginUnitSequence(zoneId)
     unitSequenceZone = zoneId
     cycleUnitUpgradeReadyZone = zoneId
     refreshUnitCooldown()
+    modules.workspaceCleanup.runWithSequence()
 end
 connect(pages.units.resetCooldown.Activated, function()
     if not alive then return end
@@ -3936,7 +3922,6 @@ local function waitAtPickaxeShop(seconds)
     local deadline = os.clock() + math.max(0, seconds)
     if os.clock() >= deadline then return end
     waitingAtPickaxeShop = true
-    if modules.idleClick then modules.idleClick.stop() end
     local ok, problem = pcall(function()
         openPickaxeShop(deadline)
         while os.clock() < deadline do
@@ -3983,7 +3968,6 @@ end
 modules.pickaxe = {
     waitBetweenCycles = waitAtPickaxeShop,
     cleanupWaiting = cleanupWaitingShop,
-    isWaiting = function() return waitingAtPickaxeShop end,
     run = function()
         status.Text = "Checking the current zone for pickaxe purchases..."
         -- Master detects the zone at cycle start; standalone runs detect it on demand.
@@ -7210,6 +7194,31 @@ local function clearMiningConnections()
     for _, connection in ipairs(miningConnections) do connection:Disconnect() end
     table.clear(miningConnections)
 end
+local savedMiningVisibility
+local function restoreMiningUI()
+    local saved = savedMiningVisibility
+    savedMiningVisibility = nil
+    if not saved then return end
+    for object, wasVisible in pairs(saved) do
+        -- A removed/replaced UI object must not prevent the other objects from restoring.
+        pcall(function() object.Visible = wasVisible end)
+    end
+    table.clear(saved)
+end
+local function hideMiningUI()
+    restoreMiningUI()
+    local miningPlayerGui = player:FindFirstChildOfClass("PlayerGui")
+    if not miningPlayerGui then return end
+    savedMiningVisibility = {}
+    for _, object in ipairs(miningPlayerGui:GetDescendants()) do
+        -- Keep the script's controls usable, including when hosted inside PlayerGui.
+        if object:IsA("GuiObject") and not object:IsDescendantOf(gui)
+            and not gui:IsDescendantOf(object) and object.Visible then
+            savedMiningVisibility[object] = object.Visible
+            object.Visible = false
+        end
+    end
+end
 local savedCamera
 local savedCameraType
 local savedCameraCFrame
@@ -7284,6 +7293,7 @@ local function mine()
     end
 
     local ok, reason = pcall(function()
+        hideMiningUI()
         while enabled and not closed do
             checkAlive()
             if targetGone() then finish(); break end
@@ -7363,6 +7373,7 @@ local function mine()
             task.wait()
         end
     end)
+    restoreMiningUI()
     clearMiningConnections()
     running = false
     restoreCamera()
@@ -8072,6 +8083,7 @@ modules.tutorial = {
     cleanup = function()
         enabled, flowActive, running = false, false, false
         pendingConfirmation, confirmed = false, false
+        restoreMiningUI()
         clearMiningConnections()
         releaseInputs()
         restoreCamera()
@@ -8089,6 +8101,1052 @@ modules.tutorial = {
         return "Tutorial stages 0–7 completed. Game settings were checked live."
     end,
 }
+end)()
+end
+
+-- One-shot Trial -> Events -> Mailbox sequence from scripts/auto.luau.
+do
+(function()
+local CONFIG = {
+    ConsoleLogs = true,
+    VerboseLogs = false, -- Enable full UI paths, colors and polling diagnostics.
+    LogRepeatInterval = 5,
+    VisibilityRetry = 1,
+    RefreshDelay = 0.2,
+    SettleTime = 0.15,
+    ClaimRetry = 0.1,
+    TrialClaimDelay = 1,
+    Poll = 0.1,
+    LoadTimeout = 30,
+    DefaultClickEvent = "MouseButton1Click",
+}
+
+local activeContext, logStartedAt
+local run = button(minimizedControls, "Auto tasks: Run once", UDim2.fromOffset(0, 36), UDim2.new(0.5, -3, 0, 28))
+run.Name, run.TextSize = "AutoTasksRun", 12
+local statusLabel = minimizedActions.newStatus("")
+pages.autoSequence = {name = "Auto tasks", run = run, status = statusLabel, runText = "Auto tasks: Run once"}
+
+local function log(message, level, ctx)
+    level = level or "INFO"
+    if level == "DEBUG" and not CONFIG.VerboseLogs then return end
+    if not CONFIG.ConsoleLogs and level ~= "ERROR" then return end
+    ctx = ctx or activeContext
+    local stage = ctx and ctx.stage and ctx.stage.name or "Controls"
+    local elapsed = logStartedAt and (os.clock() - logStartedAt) or 0
+    local line = string.format("[Automation][%s][+%.1fs][%s] %s", stage, elapsed, level, message)
+    if level == "ERROR" then warn(line) else print(line) end
+end
+
+-- Conditions are polled frequently; print only when their values change.
+local function logChanged(ctx, key, message, level)
+    ctx.logStates = ctx.logStates or {}
+    if ctx.logStates[key] ~= message then
+        ctx.logStates[key] = message
+        log(message, level or "DEBUG", ctx)
+    end
+end
+
+local function logOnce(ctx, key, message, level)
+    ctx.logSeen = ctx.logSeen or {}
+    if not ctx.logSeen[key] then
+        ctx.logSeen[key] = true
+        log(message, level, ctx)
+    end
+end
+
+-- Retrying actions still run at their normal rate; only their logs are limited.
+local function logRetry(ctx, key, message, level)
+    ctx.logTimes = ctx.logTimes or {}
+    local now = os.clock()
+    local last = ctx.logTimes[key]
+    if not last or now - last >= CONFIG.LogRepeatInterval then
+        ctx.logTimes[key] = now
+        log(message, level or "RETRY", ctx)
+    end
+end
+
+local function path(root, names)
+    for _, name in ipairs(names) do
+        root = root and root:FindFirstChild(name)
+        if not root then return nil end
+    end
+    return root
+end
+
+local function setStatus(message, quiet)
+    checkAlive()
+    if not quiet then
+        if activeContext then logChanged(activeContext, "status", message, "STATE")
+        else log(message, "STATE") end
+    end
+    if alive and statusLabel then statusLabel.Text = message end
+    if alive and overviewStatus then overviewStatus.Text = message end
+end
+
+-- Keep reward names readable while distinguishing identically named event cards.
+local function rewardLabel(card)
+    local name = card.Name
+    if name == "RewardCard" and card.Parent then
+        local index = 0
+        for _, sibling in ipairs(card.Parent:GetChildren()) do
+            if sibling.Name == "RewardCard" then index = index + 1 end
+            if sibling == card then break end
+        end
+        name = "RewardCard #" .. tostring(index)
+    end
+    local ancestor = card.Parent
+    while ancestor and ancestor ~= playerGui do
+        if ancestor.Name:match("^Row_T%d+$") or ancestor.Name:match("^M%d+$") then
+            return ancestor.Name .. " / " .. name
+        end
+        ancestor = ancestor.Parent
+    end
+    return name
+end
+
+local function guard(ctx)
+    checkAlive()
+    if ctx ~= activeContext or ctx.cleaned then error("Run stopped.", 0) end
+    if ctx.plot then
+        local plots = path(workspace, {"MineWorld", "Plots"})
+        if not plots or ctx.plot.Parent ~= plots
+            or not ctx.plot:IsDescendantOf(workspace)
+            or tonumber(ctx.plot:GetAttribute("OwnerUserId")) ~= player.UserId then
+            error("Your MinePlot was removed or its ownership changed. Run again after your plot loads.", 0)
+        end
+    end
+    if ctx.eventsFrame and path(playerGui, {"MineGui", "EventsFrameV2"}) ~= ctx.eventsFrame then
+        error("EventsFrameV2 was replaced or removed. Run again.", 0)
+    end
+    if ctx.mailboxFrame and path(playerGui, {"MineGui", "MailboxFrame"}) ~= ctx.mailboxFrame then
+        error("MailboxFrame was replaced or removed. Run again.", 0)
+    end
+    if ctx.frame and path(playerGui, {"MineGui", "TrialFrame"}) ~= ctx.frame then
+        error("TrialFrame was replaced or removed. Run again.", 0)
+    end
+end
+
+local function colorIs(color, r, g, b)
+    return math.floor(color.R * 255 + 0.5) == r
+        and math.floor(color.G * 255 + 0.5) == g
+        and math.floor(color.B * 255 + 0.5) == b
+end
+
+local function startContent(ctx)
+    return path(ctx.frame, {"Body", "Actions", "StartButton", "Content"})
+end
+
+local function observeStart(ctx)
+    local content = startContent(ctx)
+    if not content or not content:IsA("GuiObject") then
+        logChanged(ctx, "startColor", "StartButton.Content color source missing or not a GuiObject; waiting for Content.BackgroundColor3.")
+        return nil, false, false
+    end
+    local color = content.BackgroundColor3
+    local red = colorIs(color, 168, 46, 52)
+    local green = colorIs(color, 38, 148, 84)
+    logChanged(ctx, "startState", "Start button: " .. (green and "ready (green)"
+        or red and "active (red)" or "waiting"), "INFO")
+    logChanged(ctx, "startColor", string.format(
+        "StartButton color at %s = RGB(%d, %d, %d); red=%s; green=%s; greenExitArmed=%s",
+        content:GetFullName(), math.floor(color.R * 255 + 0.5),
+        math.floor(color.G * 255 + 0.5), math.floor(color.B * 255 + 0.5),
+        tostring(red), tostring(green), tostring(ctx.greenExitArmed)))
+    return content, red, green
+end
+
+local function isGreen(ctx)
+    -- Startup always requests, waits, and opens before checking completion.
+    if not ctx.greenExitArmed then return false end
+    if ctx.green then return true end
+    local _, _, green = observeStart(ctx)
+    ctx.green = green
+    return ctx.green
+end
+
+local function waitFor(ctx, label, getter, watchGreen, timeout)
+    setStatus(label)
+    local deadline = os.clock() + (timeout or CONFIG.LoadTimeout)
+    while true do
+        guard(ctx)
+        if watchGreen and isGreen(ctx) then
+            log("Start is green; finishing the trial.", "INFO", ctx)
+            return nil
+        end
+        local result = getter()
+        if result then log("Ready: " .. label, "DEBUG", ctx); return result end
+        if os.clock() >= deadline then error(label .. " (load timed out)", 0) end
+        pause(CONFIG.Poll)
+    end
+end
+
+local function visible(object)
+    if not object or not object:IsDescendantOf(playerGui) then return false end
+    while object and object ~= playerGui do
+        if object:IsA("GuiObject") and not object.Visible then return false end
+        if object:IsA("LayerCollector") and not object.Enabled then return false end
+        object = object.Parent
+    end
+    return true
+end
+
+-- Check before writing; after each write let UI handlers run before confirming.
+-- There is no overall timeout: a rejected transition is retried every second.
+local function setVisibleAndWait(ctx, object, value)
+    assert(object and object:IsA("GuiObject"), "Visibility target is not a GuiObject.")
+    local nextAttempt = 0
+    while true do
+        guard(ctx)
+        if not object:IsDescendantOf(playerGui) then
+            error("Visibility target was removed: " .. object.Name, 0)
+        end
+        if object.Visible == value then return end
+        if os.clock() >= nextAttempt then
+            logRetry(ctx, "visible:" .. object:GetFullName(), "Setting " .. object.Name
+                .. ".Visible=" .. tostring(value) .. "; retrying every "
+                .. tostring(CONFIG.VisibilityRetry) .. "s until confirmed.")
+            object.Visible = value
+            nextAttempt = os.clock() + CONFIG.VisibilityRetry
+        end
+        pause(CONFIG.Poll)
+    end
+end
+
+-- Cleanup can run after cancellation or UI replacement, so close both references.
+local function closeStageFrames(ctx, frameName, original)
+    local current = path(playerGui, {"MineGui", frameName})
+    if current and current:IsA("GuiObject") then
+        setVisibleAndWait(ctx, current, false)
+    end
+    if original and original ~= current and original:IsA("GuiObject") then
+        setVisibleAndWait(ctx, original, false)
+    end
+end
+
+-- Uses exactly one signal per click, as in the existing main.luau.
+local function clickButton(ctx, object, watchGreen, beforeClick)
+    guard(ctx)
+    if watchGreen ~= false and isGreen(ctx) then return false end
+    assert(type(firesignal) == "function", "Volt firesignal is required.")
+    assert(object, "Click target is missing.")
+    local target = object:IsA("GuiButton") and object or nil
+    if not target then
+        for _, child in ipairs(object:GetDescendants()) do
+            if child:IsA("GuiButton") and visible(child) then
+                assert(not target, "Multiple buttons inside " .. object:GetFullName())
+                target = child
+            end
+        end
+    end
+    assert(target, "No clickable button inside " .. object:GetFullName())
+    assert(visible(target), "Button is hidden: " .. target:GetFullName())
+    local eventName = CONFIG.DefaultClickEvent
+    if type(getconnections) == "function" then
+        for _, name in ipairs({"Activated", "MouseButton1Click"}) do
+            local ok, handlers = pcall(getconnections, target[name])
+            local found = false
+            if ok and type(handlers) == "table" then
+                for _, handler in pairs(handlers) do
+                    if handler.Enabled ~= false then found = true; break end
+                end
+            end
+            if found then eventName = name; break end
+        end
+    end
+    guard(ctx)
+    if watchGreen ~= false and isGreen(ctx) then return false end
+    logChanged(ctx, "click:" .. target:GetFullName(), "Click: " .. target:GetFullName() .. "; signal=" .. eventName
+        .. "; Visible=" .. tostring(target.Visible) .. "; effectiveVisible=" .. tostring(visible(target)))
+    if beforeClick and not beforeClick() then return false end
+    if eventName == "Activated" then firesignal(target.Activated, nil, 1)
+    else firesignal(target.MouseButton1Click) end
+    return true
+end
+
+local function getOwnedPlot()
+    local plots = path(workspace, {"MineWorld", "Plots"})
+    if not plots then return nil end
+    local owned
+    for _, plot in ipairs(plots:GetChildren()) do
+        if plot.Name:match("^MinePlot%d+$")
+            and tonumber(plot:GetAttribute("OwnerUserId")) == player.UserId then
+            assert(not owned, "Multiple MinePlots match your OwnerUserId; stopped.")
+            owned = plot
+        end
+    end
+    return owned
+end
+
+local function getRows(ctx)
+    local rows = path(ctx.frame, {"Body", "Rows"})
+    local result = {}
+    if rows then
+        for _, row in ipairs(rows:GetChildren()) do
+            local number = tonumber(row.Name:match("^Row_T(%d+)$"))
+            if number then table.insert(result, {object = row, number = number}) end
+        end
+    end
+    table.sort(result, function(a, b) return a.number < b.number end)
+    local names = {}
+    for _, entry in ipairs(result) do table.insert(names, entry.object.Name) end
+    logChanged(ctx, "rows", "Milestones: "
+        .. (#names > 0 and table.concat(names, ", ") or "waiting for rows"), "INFO")
+    return result
+end
+
+local function isItem(object)
+    return object.Name:sub(1, 4) == "Item"
+end
+
+-- Only direct Item* children of this row's Body.RewardsHere are rewards.
+local function rewardItems(rewards)
+    local items = {}
+    for _, child in ipairs(rewards:GetChildren()) do
+        if isItem(child) then table.insert(items, child) end
+    end
+    return items
+end
+
+local function rewardStatus(item)
+    local overlay = path(item, {"Content", "ClaimedOverlay"})
+    local hasOverlay = overlay ~= nil and overlay:IsA("GuiObject")
+    local claimed = hasOverlay and overlay.Visible == true or false
+    local badge = path(item, {"Content", "ClaimBadge"})
+    local claimable = badge ~= nil and badge:IsA("GuiObject") and badge.Visible == true
+    return claimed, not claimed and claimable and visible(item), hasOverlay
+end
+
+local function inspectRow(ctx, row, state)
+    local body = row:FindFirstChild("Body")
+    local rewards = body and body:FindFirstChild("RewardsHere")
+    if not rewards then
+        logChanged(ctx, "rowBody:" .. row.Name, row.Name .. ": Body.RewardsHere missing; waiting.")
+        state.quietSince = nil
+        return false, {}
+    end
+    logChanged(ctx, "rowBody:" .. row.Name, row.Name .. ": Body.RewardsHere found.")
+    local current = {}
+    for _, item in ipairs(rewardItems(rewards)) do
+        local key = item:GetFullName()
+        current[key] = item
+        local previous = state.items[key]
+        if not previous or previous.object ~= item then
+            log((previous and "Reward replaced: " or "Reward discovered: ") .. key, "DEBUG", ctx)
+            -- A replacement must provide its own claimed evidence.
+            state.items[key] = {object = item,
+                clicked = false, nextClick = 0, complete = false,
+                attempts = 0}
+            state.quietSince = nil
+        end
+    end
+
+    local allComplete = next(state.items) ~= nil
+    local claimable = {}
+    for key, itemState in pairs(state.items) do
+        local item = current[key]
+        if item then
+            local claimed, canClick, hasOverlay = rewardStatus(item)
+            if claimed and not itemState.complete then
+                log(rewardLabel(item) .. ": claim confirmed", "CLAIM", ctx)
+            end
+            itemState.complete = claimed
+            if canClick and not itemState.complete then
+                table.insert(claimable, {item = item, key = key, state = itemState})
+            end
+            logChanged(ctx, "reward:" .. key, string.format(
+                "Reward %s: present=true; Content.ClaimedOverlay.exists=%s; ClaimedOverlay.Visible=%s; canClick=%s; clicked=%s; complete=%s",
+                key, tostring(hasOverlay), tostring(claimed), tostring(canClick),
+                tostring(itemState.clicked), tostring(itemState.complete)))
+        else
+            -- Disappearance or a claim attempt cannot confirm an unclaimed reward.
+            logChanged(ctx, "reward:" .. key, string.format(
+                "Reward %s: present=false; clicked=%s; complete=%s; waiting for ClaimedOverlay confirmation if incomplete",
+                key, tostring(itemState.clicked), tostring(itemState.complete)))
+        end
+        if not itemState.complete then allComplete = false end
+    end
+
+    if allComplete then
+        state.quietSince = state.quietSince or os.clock()
+        return os.clock() - state.quietSince >= CONFIG.SettleTime, claimable
+    end
+    state.quietSince = nil
+    return false, claimable
+end
+
+local function setTrialVisible(ctx, value)
+    setVisibleAndWait(ctx, ctx.frame, value)
+    logChanged(ctx, "frameVisible", ctx.frame.Visible and "Trial panel opened." or "Trial panel closed.", "INFO")
+end
+
+local function openTrialFrame(ctx)
+    setStatus("Opening TrialFrame; retrying until Visible is true...")
+    setTrialVisible(ctx, true)
+    ctx.opened = true
+end
+
+local function ensureRowsVisible(ctx)
+    while true do
+        guard(ctx)
+        if isGreen(ctx) then return false end
+        local rows = path(ctx.frame, {"Body", "Rows"})
+        local ready = rows ~= nil and rows:IsA("GuiObject") and rows.Visible == true
+        logChanged(ctx, "rowsVisible", "Rows.Visible = " .. tostring(ready)
+            .. "; exists=" .. tostring(rows ~= nil))
+        if ready then return true end
+
+        setStatus("Waiting for Rows.Visible=true; retrying Milestones every "
+            .. tostring(CONFIG.VisibilityRetry) .. "s...")
+        local button = path(ctx.frame, {"Body", "Actions", "MilestonesButton"})
+        local canClick = button ~= nil and visible(button)
+        logChanged(ctx, "milestones", "MilestonesButton: exists=" .. tostring(button ~= nil)
+            .. "; effectiveVisible=" .. tostring(canClick))
+        if canClick and os.clock() >= ctx.nextMilestonesClick then
+            if not clickButton(ctx, button) then return false end
+            ctx.nextMilestonesClick = os.clock() + CONFIG.VisibilityRetry
+            ctx.milestonesAttempts = ctx.milestonesAttempts + 1
+            logRetry(ctx, "milestonesRetry", "Opening milestones (attempt " .. tostring(ctx.milestonesAttempts) .. ").")
+        end
+        pause(CONFIG.Poll)
+    end
+end
+
+local function finish(ctx, reason)
+    guard(ctx)
+    log("Finishing: " .. (reason or "Start is green") .. ".", "DEBUG", ctx)
+    setTrialVisible(ctx, false)
+    return "Done: " .. (reason or "Start is green") .. ". Trial UI closed."
+end
+
+local function runTrial(ctx)
+    log("Player: " .. player.Name .. " (" .. tostring(player.UserId) .. ")", "DEBUG", ctx)
+    log("Start colors: red=RGB(168,46,52); green=RGB(38,148,84); green exit armed after opening.", "DEBUG", ctx)
+    ctx.plot = waitFor(ctx, "Waiting for your owned MinePlot (OwnerUserId="
+        .. tostring(player.UserId) .. ")...", getOwnedPlot)
+    log("Owned plot: " .. ctx.plot.Name, "INFO", ctx)
+    local title = waitFor(ctx, "Waiting for TrialStone title...", function()
+        return path(ctx.plot, {"TrialStone", "Sign", "Board", "Title"})
+    end)
+    assert(title:IsA("GuiObject"), "TrialStone Title has no Visible property.")
+    logChanged(ctx, "titleVisible", "TrialStone Title.Visible = " .. tostring(title.Visible))
+    if not title.Visible then return "Skipped: TrialStone title is not visible." end
+
+    assert(type(firesignal) == "function", "Volt firesignal is required.")
+    local event = waitFor(ctx, "Waiting for GamestateEvent...", function()
+        return path(ReplicatedStorage, {"Remotes", "GamestateEvent"})
+    end)
+    assert(event:IsA("RemoteEvent"), "GamestateEvent is not a RemoteEvent.")
+    ctx.event = event
+    guard(ctx)
+    logChanged(ctx, "titleVisible", "TrialStone Title.Visible = " .. tostring(title.Visible))
+    if not title.Visible then return "Skipped: TrialStone title is not visible." end
+    log("Trial requested.", "INFO", ctx)
+    ctx.trialRequested = true
+    event:FireServer("MineTrialStart")
+    local openAt = os.clock() + CONFIG.RefreshDelay
+    waitFor(ctx, "Trial requested. Waiting " .. tostring(CONFIG.RefreshDelay)
+        .. " seconds before opening TrialFrame...",
+        function() return os.clock() >= openAt end, false, math.huge)
+
+    ctx.frame = waitFor(ctx, "Waiting for TrialFrame...", function()
+        return path(playerGui, {"MineGui", "TrialFrame"})
+    end, false, math.huge)
+    assert(ctx.frame:IsA("GuiObject"), "TrialFrame has no Visible property.")
+    log("TrialFrame initial Visible = " .. tostring(ctx.frame.Visible)
+        .. " (observed only; opening now follows the request delay).", "DEBUG", ctx)
+    openTrialFrame(ctx)
+    ctx.greenExitArmed = true
+    if isGreen(ctx) then return finish(ctx) end
+
+    local rows = waitFor(ctx, "Waiting for Row_T<number> milestones...", function()
+        if not ensureRowsVisible(ctx) then return nil end
+        local found = getRows(ctx)
+        return #found > 0 and found or nil
+    end, true, math.huge)
+    if not rows or ctx.green then return finish(ctx) end
+
+    local states, allClearSince = {}, nil
+    local nextRewardClick = 0
+    while true do
+        guard(ctx)
+        if isGreen(ctx) then return finish(ctx) end
+        if not ensureRowsVisible(ctx) then return finish(ctx) end
+
+        rows = getRows(ctx) -- Discover every row, even while a lower row is pending.
+        local present, tracked = {}, {}
+        for _, entry in ipairs(rows) do
+            local row = entry.object
+            present[row.Name] = true
+            if not states[row.Name] or states[row.Name].row ~= row then
+                log((states[row.Name] and "Row replaced: " or "Row discovered: ") .. row.Name, "DEBUG", ctx)
+                states[row.Name] = {row = row, number = entry.number,
+                    items = {}, complete = false}
+                allClearSince = nil
+            end
+        end
+        for name, state in pairs(states) do
+            table.insert(tracked, {name = name, state = state})
+        end
+        table.sort(tracked, function(a, b) return a.state.number < b.state.number end)
+
+        local pending, claimable
+        for _, entry in ipairs(tracked) do
+            local state = entry.state
+            local cleared, visibleItems = state.complete, {}
+            if present[entry.name] then
+                cleared, visibleItems = inspectRow(ctx, state.row, state)
+                state.complete = cleared
+            end
+            logChanged(ctx, "row:" .. entry.name, entry.name .. ": "
+                .. (cleared and "complete" or present[entry.name] and "pending" or "waiting for row"), "INFO")
+            if not cleared then
+                pending = entry
+                claimable = visibleItems
+                break
+            end
+        end
+
+        if pending then
+            allClearSince = nil
+            setStatus(present[pending.name] and ("Waiting/claiming " .. pending.name .. "...")
+                or ("Waiting for " .. pending.name .. " to reappear..."))
+            -- Space all Trial reward clicks one second apart, including retries and row changes.
+            for _, reward in ipairs(claimable) do
+                if os.clock() >= nextRewardClick and os.clock() >= reward.state.nextClick then
+                    -- Recheck both the claimed overlay and claim badge before clicking.
+                    local claimed, canClick = rewardStatus(reward.item)
+                    if canClick and not claimed
+                        and clickButton(ctx, reward.item, true, function()
+                            local latestClaimed, latestCanClick = rewardStatus(reward.item)
+                            return not latestClaimed and latestCanClick
+                        end) then
+                        reward.state.clicked = true
+                        reward.state.attempts = reward.state.attempts + 1
+                        nextRewardClick = os.clock() + CONFIG.TrialClaimDelay
+                        reward.state.nextClick = nextRewardClick
+                        logRetry(ctx, "claimRetry:" .. reward.key, rewardLabel(reward.item)
+                            .. ": claim requested (attempt " .. tostring(reward.state.attempts) .. ").")
+                    end
+                end
+            end
+        elseif #tracked > 0 and #rows > 0 then
+            allClearSince = allClearSince or os.clock()
+            setStatus("All rewards confirmed. Checking for remaining rows...")
+            if os.clock() - allClearSince >= CONFIG.SettleTime then
+                if isGreen(ctx) then return finish(ctx) end
+                return finish(ctx, "all milestone rewards are claimed")
+            end
+        else
+            allClearSince = nil
+            setStatus("Waiting for milestone rows to reappear...")
+        end
+        -- Reward waits intentionally have no timeout. Stop cancels them.
+        pause(CONFIG.Poll)
+    end
+end
+
+-- Events use their own context so Trial's green Start cannot stop this stage.
+local function eventIsActive(ctx, header)
+    local strip = path(ctx.eventsFrame, {"Safe", "Strip"})
+    local when = path(header, {"Info", "When"})
+    local hasText = when and (when:IsA("TextLabel") or when:IsA("TextButton")
+        or when:IsA("TextBox"))
+    if not strip or header.Parent ~= strip or not hasText then return false, "<missing>" end
+    local raw = when.Text
+    if not header:IsA("GuiObject") or not header.Visible or not visible(header) then
+        return false, raw
+    end
+    local text = when.RichText and raw:gsub("<[^>]*>", "") or raw
+    text = string.lower(text)
+    return string.find(text, "ends", 1, true) ~= nil, raw
+end
+
+local function eventHeaders(ctx)
+    local strip = path(ctx.eventsFrame, {"Safe", "Strip"})
+    local headers = {}
+    if strip then
+        for _, child in ipairs(strip:GetChildren()) do
+            if child:IsA("GuiObject") and eventIsActive(ctx, child) then
+                local hasButton = child:IsA("GuiButton")
+                if not hasButton then
+                    for _, descendant in ipairs(child:GetDescendants()) do
+                        if descendant:IsA("GuiButton") and visible(descendant) then
+                            hasButton = true
+                            break
+                        end
+                    end
+                end
+                if hasButton then table.insert(headers, child) end
+            end
+        end
+    end
+    table.sort(headers, function(a, b)
+        if a.LayoutOrder ~= b.LayoutOrder then return a.LayoutOrder < b.LayoutOrder end
+        return a.Name < b.Name
+    end)
+    return headers
+end
+
+local function eventRewardState(card)
+    local overlay = path(card, {"Content", "LockedOverlay"})
+    local badge = path(card, {"Content", "ClaimBadge"})
+    -- Missing lock information is still loading, never permission to claim.
+    if not overlay or not overlay:IsA("GuiObject") then return nil end
+    return {object = card, locked = overlay.Visible == true, shown = visible(card),
+        claimBadgeVisible = badge ~= nil and badge:IsA("GuiObject") and badge.Visible == true}
+end
+
+local function eventSnapshot(ctx)
+    local milestones = path(ctx.eventsFrame, {"Safe", "Body", "Main", "Pages", "Milestones"})
+    if not milestones or not visible(milestones) then return nil end
+    local rows = {}
+    for _, child in ipairs(milestones:GetChildren()) do
+        local number = tonumber(child.Name:match("^M(%d+)$"))
+        if number and child:IsA("GuiObject") then
+            -- Confirm every M1, M2, ... before reading any rewards.
+            if not child.Visible or not visible(child) then return nil end
+            table.insert(rows, {object = child, number = number})
+        end
+    end
+    if #rows == 0 then return nil end
+    table.sort(rows, function(a, b) return a.number < b.number end)
+    local cards = {}
+    for _, row in ipairs(rows) do
+        local rewards = path(row.object, {"Body", "Rewards"})
+        if not rewards then return nil end
+        local count = 0
+        for _, child in ipairs(rewards:GetChildren()) do
+            if child.Name == "RewardCard" and child:IsA("GuiObject") then
+                local state = eventRewardState(child)
+                if not state then return nil end
+                table.insert(cards, state)
+                count = count + 1
+            end
+        end
+        if count == 0 then return nil end
+    end
+    return {page = milestones, rows = rows, cards = cards}
+end
+
+local function sameEventSnapshot(a, b)
+    if not a or not b or a.page ~= b.page
+        or #a.rows ~= #b.rows or #a.cards ~= #b.cards then return false end
+    for index, row in ipairs(a.rows) do
+        if row.object ~= b.rows[index].object then return false end
+    end
+    for index, card in ipairs(a.cards) do
+        local other = b.cards[index]
+        if card.object ~= other.object or card.locked ~= other.locked
+            or card.shown ~= other.shown
+            or card.claimBadgeVisible ~= other.claimBadgeVisible then return false end
+    end
+    return true
+end
+
+local function claimEvent(ctx, header)
+    -- Allow opening handlers to refresh placeholder countdown text first.
+    local activeSince = os.clock()
+    local ready = waitFor(ctx, "Confirming Ends countdown: " .. header.Name .. "...", function()
+        local active, text = eventIsActive(ctx, header)
+        logChanged(ctx, "eventWhen:" .. header.Name, "Event header " .. header:GetFullName()
+            .. "; Info.When.Text=" .. string.format("%q", text) .. "; eligible=" .. tostring(active))
+        if not active then return {active = false} end
+        if os.clock() - activeSince >= CONFIG.SettleTime then return {active = true} end
+        return nil
+    end, false)
+    if not ready.active then return nil end
+    setStatus("Opening event: " .. header.Name .. "...")
+    -- Recheck both visibility and the current countdown immediately before clicking.
+    local selected = clickButton(ctx, header, false, function()
+        local active, text = eventIsActive(ctx, header)
+        log("Header " .. header.Name .. ": " .. string.format("%q", text)
+            .. "; allowed=" .. tostring(active), "DEBUG", ctx)
+        return active
+    end)
+    if not selected then return nil end
+    log("Selected event: " .. header.Name, "INFO", ctx)
+    local clicked, total = {}, 0
+    local previous, stableSince
+    local deadline = os.clock() + CONFIG.LoadTimeout
+    local nextClick = os.clock() + CONFIG.SettleTime
+    while true do
+        guard(ctx)
+        if not eventIsActive(ctx, header) then
+            log(header.Name .. ": no longer eligible; moving on.", "INFO", ctx)
+            return total
+        end
+        assert(visible(ctx.eventsFrame), "Events UI was hidden during claiming. Run again.")
+        local snapshot = eventSnapshot(ctx)
+        local now = os.clock()
+        if not sameEventSnapshot(previous, snapshot) then stableSince = now end
+        previous = snapshot
+        local settleDelay = total > 0 and CONFIG.ClaimRetry or CONFIG.SettleTime
+        if snapshot and stableSince and now - stableSince >= settleDelay then
+            logOnce(ctx, "eventLoaded:" .. header.Name, string.format("%s: milestones=%d, reward cards=%d.",
+                header.Name, #snapshot.rows, #snapshot.cards), "INFO")
+            deadline = now + CONFIG.LoadTimeout
+            local pending
+            for _, state in ipairs(snapshot.cards) do
+                if state.shown and not state.locked and state.claimBadgeVisible
+                    and not clicked[state.object] then
+                    pending = state.object
+                    break
+                end
+            end
+            if not pending then
+                if now - stableSince >= CONFIG.SettleTime then
+                    log(header.Name .. ": finished; claim clicks=" .. tostring(total) .. ".", "INFO", ctx)
+                    return total
+                end
+            elseif now >= nextClick then
+                -- Skip other cards without a claim delay; recheck both conditions before firing.
+                local current = eventRewardState(pending)
+                if current and current.shown and not current.locked and current.claimBadgeVisible then
+                    local didClick = clickButton(ctx, pending, false, function()
+                        local latest = eventRewardState(pending)
+                        return latest and latest.shown and not latest.locked and latest.claimBadgeVisible
+                    end)
+                    if didClick then
+                        clicked[pending] = true
+                        total = total + 1
+                        nextClick = os.clock() + CONFIG.ClaimRetry
+                        stableSince = os.clock()
+                        log(header.Name .. " / " .. rewardLabel(pending) .. ": claim clicked", "CLAIM", ctx)
+                    end
+                end
+            end
+        elseif now >= deadline then
+            error("Event " .. header.Name .. ": milestones/reward locks did not finish loading.", 0)
+        end
+        setStatus("Checking/claiming " .. header.Name .. ": waiting for visible M1, M2... and reward locks...")
+        pause(CONFIG.Poll)
+    end
+end
+
+local function closeEvents(ctx, reason)
+    -- Also close on Stop, errors, or closing the automation controls.
+    if not ctx or not ctx.eventsFrame then return end
+    closeStageFrames(ctx, "EventsFrameV2", ctx.eventsFrame)
+    logChanged(ctx, "eventsVisible", "Events panel closed.", "INFO")
+end
+
+local function runEvents(ctx)
+    assert(type(firesignal) == "function", "Volt firesignal is required.")
+    ctx.eventsFrame = waitFor(ctx, "Waiting for EventsFrameV2...", function()
+        return path(playerGui, {"MineGui", "EventsFrameV2"})
+    end, false)
+    assert(ctx.eventsFrame:IsA("GuiObject"), "EventsFrameV2 has no Visible property.")
+    setStatus("Opening events UI; waiting for Visible=true...")
+    setVisibleAndWait(ctx, ctx.eventsFrame, true)
+    logChanged(ctx, "eventsVisible", "Events panel opened.", "INFO")
+    waitFor(ctx, "Waiting for visible event headers whose lowercase Info.When contains ends...", function()
+        return #eventHeaders(ctx) > 0
+    end, false)
+
+    local processed, count, claims = {}, 0, 0
+    local quietSince
+    while true do
+        guard(ctx)
+        local pending
+        for _, header in ipairs(eventHeaders(ctx)) do
+            if not processed[header] then pending = header; break end
+        end
+        if pending then
+            quietSince = nil
+            local claimed = claimEvent(ctx, pending)
+            if claimed ~= nil then
+                claims = claims + claimed
+                processed[pending] = true
+                count = count + 1
+            else
+                pause(CONFIG.Poll)
+            end
+        else
+            quietSince = quietSince or os.clock()
+            if os.clock() - quietSince >= CONFIG.SettleTime then break end
+            pause(CONFIG.Poll)
+        end
+    end
+    closeEvents(ctx)
+    return string.format("Done: checked %d events; clicked %d unlocked rewards. Events UI closed.", count, claims)
+end
+
+local function mailIsClaimable(ctx, mail)
+    local list = ctx.mailboxFrame:FindFirstChild("List")
+    if not list or mail.Parent ~= list or mail.Name:sub(1, 4) ~= "Mail" then return false end
+    local claimable = mail:FindFirstChild("Claimable", true)
+    return claimable ~= nil and (claimable:IsA("TextLabel") or claimable:IsA("TextButton")
+        or claimable:IsA("TextBox"))
+        and claimable.Visible == true
+        and string.find(string.lower(claimable.Text), "claimable", 1, true) ~= nil
+end
+
+local function mailboxMails(ctx)
+    local list = ctx.mailboxFrame:FindFirstChild("List")
+    local mails = {}
+    if list then
+        for _, mail in ipairs(list:GetChildren()) do
+            if mail:IsA("GuiObject") and mailIsClaimable(ctx, mail) then
+                table.insert(mails, mail)
+            end
+        end
+    end
+    table.sort(mails, function(a, b)
+        if a.LayoutOrder ~= b.LayoutOrder then return a.LayoutOrder < b.LayoutOrder end
+        return a.Name < b.Name
+    end)
+    return mails
+end
+
+local function mailboxRewardHasBadge(reward)
+    -- Item names vary; each reward's eligibility comes only from its own ClaimBadge.Visible.
+    for _, descendant in ipairs(reward:GetDescendants()) do
+        if descendant.Name == "ClaimBadge" and descendant:IsA("GuiObject")
+            and descendant.Parent.Name == "Content" and descendant.Visible == true then
+            return true
+        end
+    end
+    return false
+end
+
+local function mailboxBadgeRewards(ctx)
+    local list = path(ctx.mailboxFrame, {"Detail", "Rewards", "List"})
+    if not list then return nil, {} end
+    local rewards = {}
+    for _, reward in ipairs(list:GetChildren()) do
+        local number = tonumber(reward.Name:match("^Reward(%d+)$"))
+        if number and reward:IsA("GuiObject") and mailboxRewardHasBadge(reward) then
+            table.insert(rewards, {object = reward, number = number})
+        end
+    end
+    table.sort(rewards, function(a, b) return a.number < b.number end)
+    return list, rewards
+end
+
+local function claimMail(ctx, mail)
+    setStatus("Opening mail: " .. mail.Name .. "...")
+    if not clickButton(ctx, mail, false, function() return mailIsClaimable(ctx, mail) end) then
+        return nil
+    end
+    log("Selected mail: " .. mail.Name, "INFO", ctx)
+    local nextSelection = os.clock() + CONFIG.VisibilityRetry
+    local detailReady = waitFor(ctx, "Waiting for MailboxFrame.Detail.Visible: " .. mail.Name .. "...", function()
+        local detail = ctx.mailboxFrame:FindFirstChild("Detail")
+        if detail and detail:IsA("GuiObject") and detail.Visible == true then return detail end
+        if os.clock() >= nextSelection then
+            -- Selecting the mail populates Detail; retry the selection instead of
+            -- forcing an empty Detail panel visible.
+            if not clickButton(ctx, mail, false, function() return mailIsClaimable(ctx, mail) end) then
+                return {selectionLost = true}
+            end
+            nextSelection = os.clock() + CONFIG.VisibilityRetry
+        end
+        return nil
+    end, false, math.huge)
+    if type(detailReady) == "table" and detailReady.selectionLost then return nil end
+
+    local emptySince, previousList, previousRewards
+    local lastProgressAt = os.clock()
+    local nextClick, clicked, total = {}, {}, 0
+    while true do
+        guard(ctx)
+        local list, rewards = mailboxBadgeRewards(ctx)
+        local now = os.clock()
+        local changed = list ~= previousList or not previousRewards or #rewards ~= #previousRewards
+        if not changed then
+            for index, reward in ipairs(rewards) do
+                if reward.object ~= previousRewards[index].object then changed = true; break end
+            end
+        end
+        if changed then lastProgressAt = now end
+        previousList, previousRewards = list, rewards
+        if list then
+            if #rewards == 0 then
+                emptySince = emptySince or now
+                if now - emptySince >= CONFIG.SettleTime then
+                    log(mail.Name .. ": no visible ClaimBadge remains.", "INFO", ctx)
+                    return total
+                end
+            else
+                emptySince = nil
+                -- Click eligible Reward<number> in numeric order, then rescan their current badges.
+                for _, entry in ipairs(rewards) do
+                    local reward = entry.object
+                    if reward.Parent == list and visible(reward) and mailboxRewardHasBadge(reward)
+                        and os.clock() >= (nextClick[reward] or 0) then
+                        local didClick = clickButton(ctx, reward, false, function()
+                            return path(ctx.mailboxFrame, {"Detail", "Rewards", "List"}) == list
+                                and reward.Parent == list and visible(reward) and mailboxRewardHasBadge(reward)
+                        end)
+                        if didClick then
+                            nextClick[reward] = os.clock() + CONFIG.ClaimRetry
+                            if not clicked[reward] then
+                                clicked[reward] = true
+                                total = total + 1
+                                lastProgressAt = os.clock()
+                            end
+                            logRetry(ctx, "mailClaim:" .. mail.Name .. ":" .. reward.Name,
+                                mail.Name .. " / " .. reward.Name .. ": claim requested", "CLAIM")
+                        end
+                    end
+                end
+            end
+            setStatus("Claiming " .. mail.Name .. ": " .. tostring(#rewards) .. " visible ClaimBadge(s) remaining...")
+        else
+            emptySince = nil
+            setStatus("Waiting for Detail.Rewards.List in " .. mail.Name .. "...")
+        end
+        if os.clock() - lastProgressAt >= CONFIG.LoadTimeout then
+            error("Mail " .. mail.Name .. ": reward ClaimBadge state stopped updating.", 0)
+        end
+        -- Badge disappearance, including an initially empty list, completes this mail.
+        pause(CONFIG.Poll)
+    end
+end
+
+local function closeMailbox(ctx, reason)
+    if not ctx or not ctx.mailboxFrame then return end
+    closeStageFrames(ctx, "MailboxFrame", ctx.mailboxFrame)
+    logChanged(ctx, "mailboxVisible", "Mailbox panel closed.", "INFO")
+end
+
+local function closeMailboxAndWait(ctx)
+    setStatus("Confirming mailbox is closed...")
+    closeMailbox(ctx)
+end
+
+local function runMailbox(ctx)
+    assert(type(firesignal) == "function", "Volt firesignal is required.")
+    ctx.mailboxFrame = waitFor(ctx, "Waiting for MailboxFrame...", function()
+        return path(playerGui, {"MineGui", "MailboxFrame"})
+    end, false)
+    assert(ctx.mailboxFrame:IsA("GuiObject"), "MailboxFrame has no Visible property.")
+    local completed, count, claims = {}, 0, 0
+    while true do
+        guard(ctx)
+        setStatus("Opening mailbox UI; waiting for Visible=true...")
+        setVisibleAndWait(ctx, ctx.mailboxFrame, true)
+        logChanged(ctx, "mailboxVisible", "Mailbox panel opened.", "INFO")
+        waitFor(ctx, "Waiting for mailbox List...", function()
+            local list = ctx.mailboxFrame:FindFirstChild("List")
+            return list and visible(list) and list
+        end, false)
+
+        -- Every opening refreshes the list; select only one mail from its current Claimable.Text.
+        local openedAt = os.clock()
+        waitFor(ctx, "Refreshing mailbox entries...", function()
+            return os.clock() - openedAt >= CONFIG.RefreshDelay
+        end, false)
+        assert(visible(ctx.mailboxFrame), "Mailbox UI was hidden during claiming. Run again.")
+        local pending
+        for _, mail in ipairs(mailboxMails(ctx)) do
+            -- Reopening can leave a stale Claimable label or recreate the same mail instance.
+            if not completed[mail.Name] then pending = mail; break end
+        end
+        if not pending then
+            closeMailboxAndWait(ctx)
+            break
+        end
+
+        local claimed = claimMail(ctx, pending)
+        if claimed ~= nil then
+            completed[pending.Name] = true
+            count = count + 1
+            claims = claims + claimed
+        end
+        closeMailboxAndWait(ctx)
+        -- Let close handlers run before reopening and checking the refreshed list again.
+        pause(CONFIG.Poll)
+    end
+    return string.format("Done: checked %d mail; clicked %d rewards. Mailbox UI closed.", count, claims)
+end
+
+
+-- No waits or retry workers in cancellation: invalidate first, then attempt each
+-- cleanup independently so a missing/replaced panel cannot block Stop or unload.
+local function closeContext(ctx)
+    if not ctx or ctx.cleaned then return true end
+    ctx.cleaned = true
+    local complete = true
+    local function attempt(callback)
+        local ok, message = pcall(callback)
+        if not ok then
+            complete = false
+            log("Cleanup failed: " .. tostring(message), "ERROR", ctx)
+        end
+    end
+    if ctx.trialRequested and not ctx.cancelSent then
+        ctx.cancelSent = true
+        attempt(function()
+            local event = path(ReplicatedStorage, {"Remotes", "GamestateEvent"}) or ctx.event
+            assert(event and event:IsA("RemoteEvent"), "GamestateEvent is unavailable for trial cancellation.")
+            event:FireServer("MineTrialCancel")
+        end)
+    end
+    local frameName = ctx.stage.frameName
+    local original = ctx[ctx.stage.frameKey]
+    local current = path(playerGui, {"MineGui", frameName})
+    local function hide(frame)
+        if frame and frame:IsA("GuiObject") and frame:IsDescendantOf(playerGui) then
+            attempt(function()
+                frame.Visible = false
+                assert(not frame.Visible, frame.Name .. " did not close.")
+            end)
+        end
+    end
+    hide(current)
+    if original ~= current then hide(original) end
+    return complete
+end
+local function cleanupSequence()
+    local ctx = activeContext
+    activeContext = nil
+    return closeContext(ctx)
+end
+local sequence = {
+    {name = "Trial", run = runTrial, frameName = "TrialFrame", frameKey = "frame"},
+    {name = "Events", run = runEvents, frameName = "EventsFrameV2", frameKey = "eventsFrame"},
+    {name = "Mailbox", run = runMailbox, frameName = "MailboxFrame", frameKey = "mailboxFrame"},
+}
+modules.autoSequence = {
+    cleanup = cleanupSequence,
+    run = function()
+        logStartedAt = os.clock()
+        for index, stage in ipairs(sequence) do
+            checkAlive()
+            local ctx = {stage = stage, green = false, nextMilestonesClick = 0,
+                milestonesAttempts = 0, greenExitArmed = false}
+            activeContext = ctx
+            setStatus(string.format("%d/%d: %s...", index, #sequence, stage.name))
+            local ok, result = pcall(stage.run, ctx)
+            -- A cancelled worker must never close the panels of a newer run.
+            checkAlive()
+            local closed = cleanupSequence()
+            if not ok then error(result, 0) end
+            assert(closed, stage.name .. " cleanup failed; sequence stopped.")
+            log(tostring(result), "DONE", ctx)
+        end
+        return "Finished: Trial > Events > Mailbox."
+    end,
+    setBusy = function(running)
+        local ownRun = running and activeRun == "autoSequence"
+        run.Active, run.AutoButtonColor = not running or ownRun, not running or ownRun
+        run.Text = ownRun and "Stop auto tasks" or pages.autoSequence.runText
+        run.BackgroundColor3 = ownRun and Color3.fromRGB(165, 67, 79)
+            or (running and colors.idle or colors.accent)
+    end,
+}
+connect(run.Activated, function()
+    if not alive then return end
+    if busy and activeRun == "autoSequence" then stopRun(); return end
+    if busy then return end
+    if minimizedActions.openBusy then
+        statusLabel.Text = "Wait for the crate batch to finish."
+        return
+    end
+    startRun("autoSequence")
+end)
 end)()
 end
 
@@ -8121,6 +9179,7 @@ local function setControls(running)
     minimizedMaster.BackgroundColor3 = pages.master.run.BackgroundColor3
     stop.Active, stop.AutoButtonColor = running, running
     stop.BackgroundColor3 = running and Color3.fromRGB(165, 67, 79) or colors.idle
+    if modules.autoSequence then modules.autoSequence.setBusy(running) end
     if modules.hotbarUpgrade then modules.hotbarUpgrade.setBusy(running) end
     if modules.pickaxe and modules.pickaxe.setBusy then modules.pickaxe.setBusy(running) end
     if modules.upgrades and modules.upgrades.setBusy then modules.upgrades.setBusy(running) end
@@ -8128,11 +9187,11 @@ end
 
 local function resetRun()
     table.clear(scriptErrors.retries)
-    if modules.idleClick then modules.idleClick.stop() end
     if modules.gameSettings and modules.gameSettings.cleanup then pcall(modules.gameSettings.cleanup) end
     if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current = nil
     releaseInputs()
+    if modules.autoSequence then modules.autoSequence.cleanup() end
     if modules.pickaxe and modules.pickaxe.cleanupWaiting then pcall(modules.pickaxe.cleanupWaiting) end
     if modules.upgrades and modules.upgrades.cleanup then pcall(modules.upgrades.cleanup) end
     if modules.tutorial then modules.tutorial.cleanup() end
@@ -8334,7 +9393,7 @@ local function runStage(id, cacheZoneOnly)
     scriptErrors.clearStage(id)
     page.status.Text = tostring(result or "Finished.")
     page.status.TextColor3 = colors.success
-    if id == "hotbarUpgrade" or id == "tutorial" then logInfo(page.name, page.status.Text)
+    if id == "hotbarUpgrade" or id == "tutorial" or id == "autoSequence" then logInfo(page.name, page.status.Text)
     else logStageResult(id, page.status.Text) end
     if activeRun == "master" then
         local enabled = preferences.stages[id]
@@ -8356,6 +9415,7 @@ startRun = function(id)
         return
     end
     if id == "tutorial" and (preferences.tutorialHidden or minimizedActions.openBusy) then return end
+    if id == "autoSequence" and minimizedActions.openBusy then return end
 
     if (id == "pickaxe" or (id == "master" and preferences.stages.pickaxe)) and not modules.pickaxe.prepare() then
         pages.master.status.Text = "Check the Pickaxe tab: its limit could not be saved."
@@ -8373,7 +9433,7 @@ startRun = function(id)
     lastRun = os.clock()
     local page = runPage(id)
     page.status.TextColor3 = colors.muted
-    if id == "hotbarUpgrade" or id == "tutorial" then minimizedActions.setRollEnabled(false) end
+    if id == "hotbarUpgrade" or id == "tutorial" or id == "autoSequence" then minimizedActions.setRollEnabled(false) end
     if id == "master" then
         minimizedActions.setRollEnabled(false)
         preferences.masterEnabled = true
@@ -8419,7 +9479,6 @@ startRun = function(id)
                                 if not (cycleSkipUnitsReason and (stage == "units" or stage == "mutation" or stage == "upgradingUnit")) then
                                     runStage(stage)
                                     if stage == "sell" then
-                                        modules.workspaceCleanup.afterSell()
                                         modules.plotCleanup.start()
                                     end
                                 end
@@ -8541,7 +9600,7 @@ stopRun = function()
             setMasterStageState(stoppedStage, "Stopped")
         end
     end
-    footer.Text = "Stopped. Master OFF."
+    footer.Text = stoppedRun == "autoSequence" and "Auto tasks stopped." or "Stopped. Master OFF."
 end
 connect(stop.Activated, function() stopRun() end)
 
