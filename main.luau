@@ -5974,10 +5974,18 @@ local function mutateHotbarUnitToUnreal(slot, plot, checkTarget, report, keepOpe
         local current = readFocusedRank()
         slot.rank, slot.mutation = current, names[current]
         if current >= unreal then break end
-        local panel = assert(mutationPanel(), "Mutation panel is unavailable.")
-        if not canRoll(path(panel, {"Side", "RollButton"})) then
-            error("M1 mutation roll unavailable (red means no money); batch stopped before upgrades.", 0)
-        end
+        -- A color mismatch can be a UI transition, not proof of red/no money.
+        -- Wait without a deadline and recheck Unreal before sending another roll.
+        current = waitUntil(function()
+            checkTarget(slot, true)
+            local rank = readFocusedRank()
+            if rank >= unreal then return rank end
+            local panel = assert(mutationPanel(), "Mutation panel is unavailable.")
+            if canRoll(path(panel, {"Side", "RollButton"})) then return rank end
+            report((slot.hotbarName or slot.expectedName) .. ": waiting for the mutation Roll button to become ready...")
+        end, math.huge, "M1: waiting for mutation Roll button readiness.")
+        slot.rank, slot.mutation = current, names[current]
+        if current >= unreal then break end
         report(string.format("%s: mutating to Unreal. Roll: %d", slot.hotbarName or slot.expectedName, rolls + 1))
         checkTarget(slot, true)
         checkAlive()
