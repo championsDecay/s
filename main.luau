@@ -1062,7 +1062,6 @@ local function cleanup(destroyGui)
             end
         end
     end)
-    -- Restore tutorial mining visibility after all panel-closing cleanup has finished.
     if modules.tutorial then attempt("tutorial", modules.tutorial.cleanup) end
     attempt("Restore position", restorePosition)
     attempt("Flush logs", logging.flush)
@@ -7344,31 +7343,6 @@ local function clearMiningConnections()
     for _, connection in ipairs(miningConnections) do connection:Disconnect() end
     table.clear(miningConnections)
 end
-local savedMiningVisibility
-local function restoreMiningUI()
-    local saved = savedMiningVisibility
-    savedMiningVisibility = nil
-    if not saved then return end
-    for object, wasVisible in pairs(saved) do
-        -- A removed/replaced UI object must not prevent the other objects from restoring.
-        pcall(function() object.Visible = wasVisible end)
-    end
-    table.clear(saved)
-end
-local function hideMiningUI()
-    restoreMiningUI()
-    local miningPlayerGui = player:FindFirstChildOfClass("PlayerGui")
-    if not miningPlayerGui then return end
-    savedMiningVisibility = {}
-    for _, object in ipairs(miningPlayerGui:GetDescendants()) do
-        -- Keep the script's controls usable, including when hosted inside PlayerGui.
-        if object:IsA("GuiObject") and not object:IsDescendantOf(gui)
-            and not gui:IsDescendantOf(object) and object.Visible then
-            savedMiningVisibility[object] = object.Visible
-            object.Visible = false
-        end
-    end
-end
 local statusLabel = {Text = "Ready"}
 local button = {}
 local function setEnabled(value, message)
@@ -7427,7 +7401,6 @@ local function mine()
 
     local ok, reason = pcall(function()
         assert(type(fireclickdetector) == "function", "Tutorial mining requires fireclickdetector")
-        hideMiningUI()
         while enabled and not closed do
             checkAlive()
             if not plot then
@@ -7475,7 +7448,6 @@ local function mine()
             task.wait()
         end
     end)
-    restoreMiningUI()
     clearMiningConnections()
     running = false
     if not ok then
@@ -8184,7 +8156,6 @@ modules.tutorial = {
     cleanup = function()
         enabled, flowActive, running = false, false, false
         pendingConfirmation, confirmed = false, false
-        restoreMiningUI()
         clearMiningConnections()
         releaseInputs()
     end,
