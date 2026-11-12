@@ -8646,33 +8646,36 @@ local function runTradePreset(ctx)
                 return entry.object.Parent == bag and currentName and currentName.Text:lower() == entry.itemName:lower()
                     and visible(entry.object)
             end), "Bag card could not be selected.")
-            local picker = waitPreset(ctx, "Waiting for AmountPick: " .. entry.itemName .. "...", function()
-                local current = ctx.presetTradeFrame:FindFirstChild("AmountPick")
-                return current and current:IsA("GuiObject") and visible(current) and current
-            end)
-            local amount, lateOrder = selectedPresetAmount(ctx, picker, entry.itemName, bagAmount, function()
-                return findPresetOffer(ctx, entry.itemName, wanted, before)
-            end)
-            if lateOrder ~= nil then placedOrder = lateOrder; break end
-            local add = waitPreset(ctx, "Waiting for AddButton: " .. entry.itemName .. "...", function()
-                assert(ctx.presetTradeFrame:FindFirstChild("AmountPick") == picker and visible(picker),
-                    "Amount picker closed before AddButton could be clicked.")
-                local current = path(picker, {"Content", "Buttons", "AddButton"})
-                return current and current:IsA("GuiButton") and visible(current) and current.Active and current
-            end, CONFIG.TradeAddConfirmTimeout)
-            -- The offer may have arrived while a previous attempt was being reopened.
-            placedOrder = findPresetOffer(ctx, entry.itemName, amount, before)
-            if placedOrder ~= nil then break end
-            setStatus(ctx, "Adding " .. entry.itemName .. " (quantity " .. tostring(amount) .. ")...")
-            clickPresetTarget(ctx, add, nil, function()
-                local value = path(picker, {"Content", "Amount", "Slider", "Knob", "Row", "Value"})
-                return ctx.presetTradeFrame:FindFirstChild("AmountPick") == picker and visible(picker)
-                    and path(picker, {"Content", "Buttons", "AddButton"}) == add and visible(add) and add.Active
-                    and value and presetItemCount(value.Text) == amount
-            end)
-            placedOrder = confirmPresetAdd(ctx, entry.itemName, amount, before)
+            -- Single-copy cards are added directly by the card click.
+            if bagAmount ~= 1 then
+                local picker = waitPreset(ctx, "Waiting for AmountPick: " .. entry.itemName .. "...", function()
+                    local current = ctx.presetTradeFrame:FindFirstChild("AmountPick")
+                    return current and current:IsA("GuiObject") and visible(current) and current
+                end)
+                local amount, lateOrder = selectedPresetAmount(ctx, picker, entry.itemName, bagAmount, function()
+                    return findPresetOffer(ctx, entry.itemName, wanted, before)
+                end)
+                if lateOrder ~= nil then placedOrder = lateOrder; break end
+                local add = waitPreset(ctx, "Waiting for AddButton: " .. entry.itemName .. "...", function()
+                    assert(ctx.presetTradeFrame:FindFirstChild("AmountPick") == picker and visible(picker),
+                        "Amount picker closed before AddButton could be clicked.")
+                    local current = path(picker, {"Content", "Buttons", "AddButton"})
+                    return current and current:IsA("GuiButton") and visible(current) and current.Active and current
+                end, CONFIG.TradeAddConfirmTimeout)
+                -- The offer may have arrived while a previous attempt was being reopened.
+                placedOrder = findPresetOffer(ctx, entry.itemName, amount, before)
+                if placedOrder ~= nil then break end
+                setStatus(ctx, "Adding " .. entry.itemName .. " (quantity " .. tostring(amount) .. ")...")
+                clickPresetTarget(ctx, add, nil, function()
+                    local value = path(picker, {"Content", "Amount", "Slider", "Knob", "Row", "Value"})
+                    return ctx.presetTradeFrame:FindFirstChild("AmountPick") == picker and visible(picker)
+                        and path(picker, {"Content", "Buttons", "AddButton"}) == add and visible(add) and add.Active
+                        and value and presetItemCount(value.Text) == amount
+                end)
+            end
+            placedOrder = confirmPresetAdd(ctx, entry.itemName, wanted, before)
             if placedOrder == nil then
-                setStatus(ctx, entry.itemName .. " x" .. tostring(amount) .. " not found in Slots. Retrying the same card...")
+                setStatus(ctx, entry.itemName .. " x" .. tostring(wanted) .. " not found in Slots. Retrying the same card...")
                 logRetry(ctx, "presetRetry:" .. tostring(index), "No matching offer after Add; retrying " .. entry.itemName .. ".", "INFO")
                 task.wait(CONFIG.TradeTrackRetry)
             end
