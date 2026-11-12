@@ -8493,10 +8493,16 @@ local function presetItemCount(text)
     return tonumber((text:gsub(",", ""):match("^%s*[xX]?%s*(%d+)%s*$")))
 end
 
+local function presetActualItemCount(field, requireBlankForSingle)
+    if not field or not (field:IsA("TextLabel") or field:IsA("TextButton") or field:IsA("TextBox")) then return nil end
+    -- Bag: hidden means one. Offer: both hidden and blank means one.
+    if field.Visible == false and (not requireBlankForSingle or field.Text == "") then return 1 end
+    return presetItemCount(field.Text)
+end
+
 local function presetBagAmount(entry)
     local field = path(entry.object, {"Content", "ActualItemCount"})
-    local amount = field and (field:IsA("TextLabel") or field:IsA("TextButton") or field:IsA("TextBox"))
-        and presetItemCount(field.Text)
+    local amount = presetActualItemCount(field, false)
     assert(amount and amount > 0, "Bag quantity is missing or zero for " .. entry.itemName .. ".")
     return amount
 end
@@ -8547,8 +8553,7 @@ local function presetOfferState(ctx)
         if slot:IsA("GuiObject") and visible(slot) then
             local name = path(slot, {"Content", "ItemName"})
             local count = path(slot, {"Content", "ActualItemCount"})
-            local amount = count and (count:IsA("TextLabel") or count:IsA("TextButton") or count:IsA("TextBox"))
-                and presetItemCount(count.Text)
+            local amount = presetActualItemCount(count, true)
             if name and (name:IsA("TextLabel") or name:IsA("TextButton") or name:IsA("TextBox"))
                 and amount and amount > 0 then
                 local normalized = name.Text:lower()
