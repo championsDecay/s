@@ -8607,6 +8607,7 @@ end
 local function runTradePreset(ctx)
     local presetKey = ctx.presetKey or CONFIG.TradePreset
     local preset = presetsByName[presetKey]
+    local indexPreset = presetKey:lower() == "index"
     assert(type(preset) == "table", "Unknown trade preset: " .. tostring(presetKey))
     if #preset == 0 then
         return "Done: preset " .. presetKey .. " is empty. Fill in CONFIG[\"trade-preset\"] first."
@@ -8618,11 +8619,24 @@ local function runTradePreset(ctx)
     end)
     ctx.presetTradeFrame = path(playerGui, {"MineGui", "TradeFrame"})
     local cards = tradePresetCards(bag, preset)
+    if indexPreset then
+        -- One offered card per item name, including cards already in Slots.
+        local seen, unique = {}, {}
+        for _, offered in ipairs(presetOfferState(ctx).records) do seen[offered.name] = true end
+        for _, entry in ipairs(cards) do
+            local name = entry.itemName:lower()
+            if not seen[name] then
+                seen[name] = true
+                table.insert(unique, entry)
+            end
+        end
+        cards = unique
+    end
     local count, limit = 0, math.min(8, #cards)
     for index = 1, limit do
         local entry = cards[index]
         local bagAmount = presetBagAmount(entry)
-        local wanted = math.min(CONFIG.TradeMaxAmount, bagAmount)
+        local wanted = indexPreset and 1 or math.min(CONFIG.TradeMaxAmount, bagAmount)
         -- Keep the baseline for this card across retries; delayed successes count once.
         local before = presetOfferState(ctx)
         local placedOrder, attempts = nil, 0
@@ -8652,10 +8666,23 @@ local function runTradePreset(ctx)
                     local current = ctx.presetTradeFrame:FindFirstChild("AmountPick")
                     return current and current:IsA("GuiObject") and visible(current) and current
                 end)
-                local amount, lateOrder = selectedPresetAmount(ctx, picker, entry.itemName, bagAmount, function()
-                    return findPresetOffer(ctx, entry.itemName, wanted, before)
-                end)
-                if lateOrder ~= nil then placedOrder = lateOrder; break end
+                local amount, lateOrder
+                if indexPreset then
+                    -- Keep the picker's default quantity; index never clicks Track.
+                    amount = waitPreset(ctx, "Waiting for index amount: " .. entry.itemName .. "...", function()
+                        assert(ctx.presetTradeFrame:FindFirstChild("AmountPick") == picker and visible(picker),
+                            "Amount picker closed before index Add could be clicked.")
+                        local value = path(picker, {"Content", "Amount", "Slider", "Knob", "Row", "Value"})
+                        local current = value and value:IsA("TextLabel") and presetItemCount(value.Text)
+                        return current and current > 0 and current
+                    end, CONFIG.TradeAddConfirmTimeout)
+                    wanted = amount
+                else
+                    amount, lateOrder = selectedPresetAmount(ctx, picker, entry.itemName, bagAmount, function()
+                        return findPresetOffer(ctx, entry.itemName, wanted, before)
+                    end)
+                    if lateOrder ~= nil then placedOrder = lateOrder; break end
+                end
                 local add = waitPreset(ctx, "Waiting for AddButton: " .. entry.itemName .. "...", function()
                     assert(ctx.presetTradeFrame:FindFirstChild("AmountPick") == picker and visible(picker),
                         "Amount picker closed before AddButton could be clicked.")
