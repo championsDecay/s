@@ -5578,7 +5578,11 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
             if copies == entry.count and copies < #empty then
                 readStableRequiredHotbar("Confirming hotbar 1 is empty before selecting the next whitelisted stack", function(summary)
                     return summary[1].name == ""
-                end)
+                end, function()
+                    -- Alternate confirmation checks with removal retries until slot 1 is empty.
+                    checkPlot(plot)
+                    event:FireServer("MineAssignHotbar", "1", "")
+                end, true)
             end
             logUnitUpgradeDetail(string.format("%s hotbar 1 batch %d: %s; placed %d copies; %d empty unlocked pads remain.",
                 zoneId, batches, entry.name, copies, #empty - copies))
