@@ -9549,7 +9549,7 @@ local function ensureRowsVisible(ctx)
         guard(ctx)
         if isGreen(ctx) then return false end
         local rows = path(ctx.frame, {"Body", "Rows"})
-        local ready = rows ~= nil and rows:IsA("GuiObject") and rows.Visible == true
+        local ready = rows ~= nil and rows:IsA("GuiObject") and rows.Visible == true and visible(rows)
         logChanged(ctx, "rowsVisible", "Rows.Visible = " .. tostring(ready)
             .. "; exists=" .. tostring(rows ~= nil))
         if ready then return true end
@@ -9565,6 +9565,13 @@ local function ensureRowsVisible(ctx)
             ctx.nextMilestonesClick = os.clock() + CONFIG.VisibilityRetry
             ctx.milestonesAttempts = ctx.milestonesAttempts + 1
             logRetry(ctx, "milestonesRetry", "Opening milestones (attempt " .. tostring(ctx.milestonesAttempts) .. ").")
+            -- After a successful click, wait only for the exact Rows container.
+            -- Do not retry Milestones or finish on green while it is loading.
+            waitFor(ctx, "Waiting for TrialFrame.Body.Rows.Visible=true...", function()
+                local current = path(ctx.frame, {"Body", "Rows"})
+                return current and current:IsA("GuiObject") and current.Visible == true and visible(current)
+            end, false, math.huge)
+            return true
         end
         pause(CONFIG.Poll)
     end
