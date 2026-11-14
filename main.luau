@@ -1522,6 +1522,7 @@ for index, spec in ipairs(specs) do
         })
     end
     tabs[id] = tab
+    runScope.masterAllowed[tab] = true
     local scrollable = id == "master" or id == "cycleEnd"
     local frame = make(scrollable and "ScrollingFrame" or "Frame", content,
         {Name = id, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false})
@@ -1752,11 +1753,11 @@ Before Density is fully upgraded, other available nodes must be above its next-n
 Use configured node-category mappings, falling back to the node base name. Skip invalid categories. Recheck the node, its color, and the Density II gate before each purchase. Retry while the node remains available, respecting the request delay and reporting prolonged retries. Stop processing a node when it disappears, becomes unavailable, or valid Colossus Pips reach 1 or higher in the current zone. Rescan Density and count confirmed green upgrades; repeat while upgrades are confirmed.
 
 COLOSSUS / NOTIFICATIONS
-Positive valid Colossus Pips confirms the unlock. Turn stages 3-4 and 6-8 OFF as soon as valid Colossus Pips reach 1 or higher (for example 1/5), in any current zone; otherwise turn stages 3-4 and 6-8 ON. Turn Unlimited Best Pickaxe ON at the max zone, even without positive Colossus Pips, and OFF in other zones. Send a Colossus alert with username, zone name/ID, and Pips. Reaching the highest configured zone sends a separate max-zone alert to the same webhook.
+Positive valid Colossus Pips confirms the unlock. Turn stages 3-4 and 6-8 OFF as soon as valid Colossus Pips reach 1 or higher (for example 1/5), in any current zone; otherwise turn stages 3-4 and 6-8 ON. Turn Unlimited Best Pickaxe ON at the max zone, even without positive Colossus Pips, and OFF in other zones. Send a Discord alert with username, zone name/ID, and Pips only when the player is in the highest configured zone and has at least 1 valid Colossus Pip. Reaching the max zone alone or unlocking Colossus in a lower zone does not send an alert.
 
-Both messages end their elapsed-time line with @everyone. Time is measured from the account/game's cached first script load, including restarts and offline time. Old caches missing a valid timestamp start tracking on their next load. Under one hour displays unknown. A valid saved timestamp is retained.
+The message ends its elapsed-time line with @everyone. Time is measured from the account/game's cached first script load, including restarts and offline time. Old caches missing a valid timestamp start tracking on their next load. Under one hour displays unknown. A valid saved timestamp is retained.
 
-Each notification type has its own sent flag per zone. Pending requests suppress duplicates in the current run; successful HTTP responses save the sent flag in the preferences cache. Failed requests can be retried on later checks. Missing webhook/request support skips sending. A cache-save failure is warned because it can allow a repeat after restarting.
+The combined max-zone + Colossus alert uses the Colossus sent flag per zone. Pending requests suppress duplicates in the current run; successful HTTP responses save the sent flag in the preferences cache. Failed requests can be retried on later checks. Missing webhook/request support skips sending. A cache-save failure is warned because it can allow a repeat after restarting.
 
 WHEN UPGRADES IS OFF
 In Master, freshly read the ZoneBoard zone, Density, and Colossus Pips every cycle, including while Upgrades is OFF. Open the skill tree by enabling SkillTreeFullFrame.Visible, wait for Tree.Canvas and the board-selected zone, then read upgrade data and send requests. Missing or unsettled Density data is retried until ready or stopped. Recheck Colossus progress in the current zone. If valid Colossus Pips have not reached 1, turn stages 3-4 and 6-8 ON and resume Upgrades in the same cycle. Turn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. These scans also prepare zone selection and tutorial hiding.
@@ -1858,6 +1859,7 @@ Master attempts this stage after normal stages, including after a stage error, w
     })
     local body = label(scroll, "", UDim2.fromOffset(0, 0), UDim2.new(1, -16, 0, 0), 14)
     body.Name, body.AutomaticSize, body.TextColor3 = "GuideText", Enum.AutomaticSize.Y, colors.text
+    runScope.masterAllowed[back] = true
     connect(back.Activated, function() stageGuide.Visible = false end)
     for _, spec in ipairs(specs) do
         local id, page = spec[1], pages[spec[1]]
@@ -1865,6 +1867,7 @@ Master attempts this stage after normal stages, including after a stage error, w
         local size = id == "master" and UDim2.new(1 / 3, -4, 0, 28) or UDim2.fromOffset(178, 28)
         local open = button(id == "master" and masterLayout.tools or page.frame, "Actions & conditions", position, size)
         open.Name, open.TextSize = "OpenStageGuide", 11
+        runScope.masterAllowed[open] = true
         connect(open.Activated, function()
             local settings = {}
             if id == "master" then
@@ -1931,6 +1934,7 @@ end
 do
     local refresh = button(masterLayout.tools, "Refresh script", UDim2.new(1 / 3, 2, 0, 0), UDim2.new(1 / 3, -4, 0, 28))
     refresh.Name, refresh.TextSize = "RefreshScriptOnce", 12
+    runScope.masterAllowed[refresh] = true
     local refreshing = false
     connect(refresh.Activated, function()
         if not alive or refreshing then return end
@@ -1977,6 +1981,7 @@ end
 do
     local copyLogs = button(masterLayout.tools, "Copy logs", UDim2.new(2 / 3, 4, 0, 0), UDim2.new(1 / 3, -4, 0, 28))
     copyLogs.Name, copyLogs.TextSize = "CopyScriptLogs", 12
+    runScope.masterAllowed[copyLogs] = true
     connect(copyLogs.Activated, function()
         if not alive then return end
         local copy = type(setclipboard) == "function" and setclipboard
@@ -4369,13 +4374,8 @@ local function notifyUpgradeMilestone(kind, zoneId, pips)
 
     local rule = CONFIG.Units.RequiredByZone[zoneId]
     local zoneName = (rule and rule.DisplayName) or zoneId
-    local content
-    if kind == "maxZone" then
-        content = string.format("**%s** reached **MAX zone: %s (%s)**!", player.Name, zoneName, zoneId)
-    else
-        content = string.format("**%s** unlocked **Colossus** in **%s (%s)**!\nColossus progress: **%s**.",
-            player.Name, zoneName, zoneId, pips)
-    end
+    local content = string.format("**%s** reached **MAX zone + Colossus 1** in **%s (%s)**!\nColossus progress: **%s**.",
+        player.Name, zoneName, zoneId, pips)
     local elapsed = math.max(0, os.time() - preferences.firstLoadedAt)
     local elapsedText = "unknown"
     if elapsed >= 3600 then
@@ -4427,10 +4427,6 @@ local function isMaxZone(zoneId)
     end
     return maxZoneId ~= nil and zoneId == maxZoneId
 end
-local function notifyMaxZoneReached(zoneId)
-    if isMaxZone(zoneId) then notifyUpgradeMilestone("maxZone", zoneId) end
-end
-
 local function reachedColossusPips(zone)
     local node = zone:FindFirstChild("Node_Colossus")
     local content = node and node:FindFirstChild("Content")
@@ -4442,7 +4438,10 @@ local function reachedColossusPips(zone)
     local count, maximum = tonumber(countText), tonumber(maxText)
     if count >= 1 and count <= maximum and maximum < math.huge then
         local progress = countText .. "/" .. maxText
-        notifyUpgradeMilestone("colossus", zone.Name:match("^Zone_(Z%d+)$"), progress)
+        local zoneId = zone.Name:match("^Zone_(Z%d+)$")
+        if isMaxZone(zoneId) then
+            notifyUpgradeMilestone("colossus", zoneId, progress)
+        end
         return progress
     end
     return nil
@@ -4671,7 +4670,6 @@ local function scanCurrentUpgradeZone()
     minimizedActions.setNotificationZone(zoneId)
     local level, zone = scanDensity(getUpgradeZone(zoneName))
     syncUnitSequenceZone(zoneId)
-    notifyMaxZoneReached(zoneId)
     logInfo("Upgrades", string.format("Fresh ZoneBoard zone: %s, Density %d.", zoneId, level))
     return zone, zoneId, level
 end
@@ -10502,7 +10500,7 @@ end
 local function runPage(id)
     return id == "hotbarUpgrade" and modules.hotbarUpgrade.page or pages[id]
 end
--- Master owns all action controls until it stops; window controls remain usable.
+-- Master locks other action controls; tabs, guides, logs, refresh, and window controls remain usable.
 do
     local saved = {}
     for _, control in ipairs({minimizedMaster, pages.master.run, title, close, minimize, stop}) do
