@@ -2932,9 +2932,9 @@ end
             CONFIG.General.WorkspaceCleanupEnabled = true
             refreshAutomaticStatus()
         end,
-        runWithSequence = function()
-            if not alive or not CONFIG.General.WorkspaceCleanupEnabled then return end
-            local ok, removed, failed = pcall(scan, true)
+        runWithSequence = function(forceOnce)
+            if not alive or (not forceOnce and not CONFIG.General.WorkspaceCleanupEnabled) then return end
+            local ok, removed, failed = pcall(scan, not forceOnce)
             if not alive then return end
             if ok and failed == 0 then
                 status.Text = string.format("Auto cleanup done: removed %d branches.", removed)
@@ -4176,33 +4176,38 @@ modules.pickaxe = {
         local results = {}
         local function buySelected(choice)
             local selectedId, selectedTile = choice.id, choice.tile
+            local pickName = selectedTile:FindFirstChild("PickName")
+            local name = pickName and (pickName:IsA("TextLabel") or pickName:IsA("TextButton")
+                or pickName:IsA("TextBox")) and pickName.Text or ""
+            local selectedLabel = string.format("Pickaxe ID %d%s", selectedId,
+                name ~= "" and (" (" .. name .. ")") or "")
             local data = readPickaxeCounts()
             maxPickaxes = data.maxPickaxes
             maxInput.Text = tostring(maxPickaxes)
             refreshCountsUI(data)
             local savedCount = data.requestCounts[string.format("%.0f", selectedId)] or 0
             if not unlimited and savedCount >= maxPickaxes then
-                return string.format("Pickaxe ID %d: limit reached (%d/%d).", selectedId, savedCount, maxPickaxes)
+                return string.format("%s: limit reached (%d/%d).", selectedLabel, savedCount, maxPickaxes)
             end
             if selectedTile.Parent ~= list or tileState(selectedTile) ~= "buyable" then
-                return string.format("Pickaxe ID %d: unavailable; no request sent.", selectedId)
+                return string.format("%s: unavailable; no request sent.", selectedLabel)
             end
 
             local count, limitCount, limit = reservePickaxe(selectedId, unlimited)
             maxInput.Text = tostring(limit)
             if not count then
-                return string.format("Pickaxe ID %d: limit reached (%d/%d).", selectedId, limitCount, limit)
+                return string.format("%s: limit reached (%d/%d).", selectedLabel, limitCount, limit)
             end
             if not alive then return "Unloaded; saved slot retained." end
             if selectedTile.Parent ~= list or tileState(selectedTile) ~= "buyable" then
-                return string.format("Pickaxe ID %d: unavailable; saved slot retained.", selectedId)
+                return string.format("%s: unavailable; saved slot retained.", selectedLabel)
             end
             checkAlive()
             event:FireServer("MineBuyPickaxe", selectedId)
             if unlimited then
-                return string.format("ID %d: request sent. Saved %d requests; buy limit disabled.", selectedId, count)
+                return string.format("%s: request sent. Saved %d requests; buy limit disabled.", selectedLabel, count)
             end
-            return string.format("ID %d: request sent. Saved %d/%d.", selectedId, count, limit)
+            return string.format("%s: request sent. Saved %d/%d.", selectedLabel, count, limit)
         end
         for _, choice in ipairs(choices) do
             checkAlive()
@@ -9156,7 +9161,7 @@ local CONFIG = {
     DefaultClickEvent = "MouseButton1Click",
 }
 
-local activeContext, logStartedAt
+local activeContext, logStartedAt, trialCancelToken
 local stopReadyAt, autoRunning, startLockToken, startLockThread = 0, false, nil, nil
 local run = button(minimizedControls, "Auto tasks: Run once", UDim2.fromOffset(0, 36), UDim2.new(0.5, -3, 0, 26))
 run.Name, run.TextSize = "AutoTasksRun", 12
@@ -9267,7 +9272,7 @@ local function rewardLabel(card)
     return name
 end
 
-local function guard(ctx)
+local function checkContext(ctx)
     checkAlive()
     if ctx.skipRequested then error("Stage ended early.", 0) end
     if ctx ~= activeContext or ctx.cleaned then error("Run stopped.", 0) end
@@ -9290,6 +9295,18 @@ local function guard(ctx)
     end
     if ctx.frame and path(playerGui, {"MineGui", "TrialFrame"}) ~= ctx.frame then
         error("TrialFrame was replaced or removed. Run again.", 0)
+    end
+end
+
+-- Keep Trial visible throughout the stage; wait for confirmation before continuing.
+local function guard(ctx)
+    while true do
+        checkContext(ctx)
+        if not ctx.keepTrialVisible or ctx.frame.Visible then return end
+        logRetry(ctx, "trialVisible", "Opening TrialFrame; waiting "
+            .. tostring(CONFIG.VisibilityRetry) .. "s before checking Visible again.")
+        ctx.frame.Visible = true
+        pause(CONFIG.VisibilityRetry)
     end
 end
 
@@ -9542,6 +9559,7 @@ local function inspectRow(ctx, row, state)
 end
 
 local function setTrialVisible(ctx, value)
+    ctx.keepTrialVisible = value
     setVisibleAndWait(ctx, ctx.frame, value)
     logChanged(ctx, "frameVisible", ctx.frame.Visible and "Trial panel opened." or "Trial panel closed.", "INFO")
 end
@@ -9616,6 +9634,7 @@ local function runTrial(ctx)
     if not title.Visible then return "Skipped: TrialStone title is not visible." end
     log("Trial requested.", "INFO", ctx)
     ctx.trialRequested = true
+    trialCancelToken = nil
     event:FireServer("MineTrialStart")
     local openAt = os.clock() + CONFIG.RefreshDelay
     waitFor(ctx, "Trial requested. Waiting " .. tostring(CONFIG.RefreshDelay)
@@ -9728,6 +9747,10 @@ local function eventIsActive(ctx, header)
     if not strip or header.Parent ~= strip or not hasText then return false, "<missing>" end
     local raw = when.Text
     if not header:IsA("GuiObject") or not header.Visible or not visible(header) then
+        return false, raw
+    end
+    local badge = path(header, {"Badge"})
+    if not badge or not badge:IsA("GuiObject") or not badge.Visible then
         return false, raw
     end
     local text = when.RichText and raw:gsub("<[^>]*>", "") or raw
@@ -10322,18 +10345,44 @@ local function runIndex(ctx)
     return string.format("Done: checked %d Index categories; clicked %d rewards. Index UI closed.", count, claims)
 end
 
--- No waits or retry workers in cancellation: invalidate first, then attempt each
--- cleanup independently so a missing/replaced panel cannot block Stop or unload.
+-- Hide TrialFrame before every cancel; retry while TrialHud stays visible.
+-- Keep retries separate so Stop and panel cleanup do not wait for the server.
 local function cancelTrialRequest(ctx)
-    local ok, message = pcall(function()
-        local event = path(ReplicatedStorage, {"Remotes", "GamestateEvent"})
-        if not event or not event:IsA("RemoteEvent") then event = ctx and ctx.event end
-        assert(event and event:IsA("RemoteEvent"), "GamestateEvent is unavailable for trial cancellation.")
-        event:FireServer("MineTrialCancel")
-        if ctx then ctx.cancelSent = true end
-    end)
-    if ok then log("MineTrialCancel end request sent.", "INFO", ctx)
-    else log("Trial end request failed: " .. tostring(message), "ERROR", ctx) end
+    local retryToken = {}
+    trialCancelToken = retryToken
+    if ctx then ctx.keepTrialVisible = false end
+    local function sendRequest()
+        local ok, message = pcall(function()
+            local frame = path(playerGui, {"MineGui", "TrialFrame"})
+            if frame and frame:IsA("GuiObject") then
+                frame.Visible = false
+                assert(not frame.Visible, "TrialFrame did not close before cancellation.")
+            end
+            local event = path(ReplicatedStorage, {"Remotes", "GamestateEvent"})
+            if not event or not event:IsA("RemoteEvent") then event = ctx and ctx.event end
+            assert(event and event:IsA("RemoteEvent"), "GamestateEvent is unavailable for trial cancellation.")
+            event:FireServer("MineTrialCancel")
+            if ctx then ctx.cancelSent = true end
+        end)
+        if ok then log("MineTrialCancel end request sent.", "INFO", ctx)
+        else log("Trial end request failed: " .. tostring(message), "ERROR", ctx) end
+        return ok
+    end
+    local ok = sendRequest()
+    if alive then
+        local thread = task.defer(function()
+            while alive and trialCancelToken == retryToken do
+                task.wait(1)
+                if not alive or trialCancelToken ~= retryToken then break end
+                local hud = path(playerGui, {"MineGui", "TrialHud"})
+                if not hud or not hud:IsA("GuiObject") or not hud.Visible then break end
+                sendRequest()
+            end
+            runScope.background[coroutine.running()] = nil
+            if trialCancelToken == retryToken then trialCancelToken = nil end
+        end)
+        runScope.background[thread] = true
+    end
     return ok
 end
 
@@ -10427,6 +10476,9 @@ modules.autoSequence = {
     end,
     run = function()
         logStartedAt = os.clock()
+        checkAlive()
+        setStatus("Cleaning workspace before auto tasks...")
+        modules.workspaceCleanup.runWithSequence(true)
         for index, stage in ipairs(sequence) do
             checkAlive()
             local ctx = {stage = stage, green = false, nextMilestonesClick = 0,
