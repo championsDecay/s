@@ -3850,6 +3850,7 @@ local function scanBestPickaxe(list)
     local reportRetry = newRetryMonitor("Scanning the best Pickaxe")
     local previousTiles = nil
     local previousStates = nil
+    local previousIds = nil
     local stableSince = os.clock()
     local problem = "No Tile children have loaded."
 
@@ -3861,28 +3862,30 @@ local function scanBestPickaxe(list)
         local children = list:GetChildren()
         local tiles = {}
         local states = {}
+        local ids = {}
         local ready = true
         local bestId = nil
         local bestTile = nil
         local secondId, secondTile
-        local id = 2
         for index = 1, #children do
             local tile = children[index]
             if tile.Name == "Tile" then
+                local id = tile.LayoutOrder + 1
                 local state, reason = tileState(tile)
                 table.insert(tiles, tile)
                 table.insert(states, state or "unknown")
+                table.insert(ids, id)
                 if not state then
                     ready = false
                     problem = string.format("Pickaxe ID %d: %s", id, reason)
                 elseif isAvailable(state) then
-
-                    secondId, secondTile = bestId, bestTile
-                    bestId = id
-                    bestTile = tile
+                    if not bestId or id > bestId then
+                        secondId, secondTile = bestId, bestTile
+                        bestId, bestTile = id, tile
+                    elseif id < bestId and (not secondId or id > secondId) then
+                        secondId, secondTile = id, tile
+                    end
                 end
-
-                id = id + 1
             end
         end
 
@@ -3894,7 +3897,8 @@ local function scanBestPickaxe(list)
             local unchanged = previousTiles ~= nil and #previousTiles == #tiles
             if unchanged then
                 for index, tile in ipairs(tiles) do
-                    if previousTiles[index] ~= tile or previousStates[index] ~= states[index] then
+                    if previousTiles[index] ~= tile or previousStates[index] ~= states[index]
+                        or previousIds[index] ~= ids[index] then
                         unchanged = false
                         break
                     end
@@ -3903,6 +3907,7 @@ local function scanBestPickaxe(list)
             if not unchanged then
                 previousTiles = tiles
                 previousStates = states
+                previousIds = ids
                 stableSince = os.clock()
             elseif os.clock() - stableSince >= SETTLE_TIME then
 
@@ -3917,6 +3922,7 @@ local function scanBestPickaxe(list)
         else
             previousTiles = nil
             previousStates = nil
+            previousIds = nil
             stableSince = os.clock()
         end
         reportRetry(problem)
