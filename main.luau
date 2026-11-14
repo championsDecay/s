@@ -63,7 +63,7 @@ local CONFIG = {
         DefaultRedeemEnabled = true,
         SpinInterval = 24 * 60 * 60 + 10,
         CodeDelay = 2,
-        Codes = { "Hallowkeep", "Moonrise", "Feasts", "ONANDON", "ACES", "AZURE" },
+        Codes = { "Hallowkeep", "Moonrise", "Feasts", "ONANDON", "ACES", "AZURE", "PICKSTORM"},
     },
     Flow = {
 
