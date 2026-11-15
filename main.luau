@@ -2519,8 +2519,8 @@ do
         local function teleportOnce()
             if not alive or (busy and activeRun == "master") then return end
             if busy and activeRun == "autoIndexUnits" then return end
-            if busy and activeRun == "autoSequence" and modules.autoSequence and not modules.autoSequence.canStop() then return end
-            if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence") and stopRun then stopRun() end
+            if busy and (activeRun == "autoSequence" or activeRun == "autoTrial") and modules.autoSequence and not modules.autoSequence.canStop() then return end
+            if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence" or activeRun == "autoTrial") and stopRun then stopRun() end
             local ok, reason = pcall(function()
                 local parent = destination.ownPlot and getMyPlot() or workspace
                 local target = findPath(parent, destination[2])
@@ -2591,8 +2591,8 @@ do
     minimizedActions.setRollEnabled = setRollEnabled
     local function toggleRoll()
         if not alive or (busy and activeRun == "master") then return end
-        if busy and activeRun == "autoSequence" and modules.autoSequence and not modules.autoSequence.canStop() then return end
-        if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence") and stopRun then stopRun() end
+        if busy and (activeRun == "autoSequence" or activeRun == "autoTrial") and modules.autoSequence and not modules.autoSequence.canStop() then return end
+        if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence" or activeRun == "autoTrial") and stopRun then stopRun() end
         setRollEnabled(not minimizedActions.rollEnabled)
     end
     connect(rollToggle.Activated, toggleRoll)
@@ -2633,7 +2633,7 @@ do
     local function startOpeningCrates()
         if busy and activeRun == "autoIndexUnits" then return end
         if not alive or (busy and activeRun == "master") or minimizedActions.openBusy or (busy and activeRun == "hotbarUpgrade") then return end
-        if busy and activeRun == "autoSequence" and modules.autoSequence and not modules.autoSequence.canStop() then return end
+        if busy and (activeRun == "autoSequence" or activeRun == "autoTrial") and modules.autoSequence and not modules.autoSequence.canStop() then return end
         local token = {kind = "open"}
         minimizedActions.openToken, minimizedActions.openBusy = token, true
         local ctx = {}
@@ -2641,7 +2641,7 @@ do
         openCrates.Text = "Opening Crates"
         openCrates.Active, openCrates.AutoButtonColor = false, false
         openCrates.BackgroundColor3 = colors.idle
-        if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence") and stopRun then stopRun() end
+        if busy and (activeRun == "master" or activeRun == "hotbarUpgrade" or activeRun == "tutorial" or activeRun == "autoSequence" or activeRun == "autoTrial") and stopRun then stopRun() end
         setRollEnabled(false)
         if not actionIsCurrent(token) then return end
         minimizedActions.openWorker = task.defer(function()
@@ -8942,7 +8942,7 @@ for index, key in ipairs(keys) do
     end
     presetButtons[key] = controls
 end
-local autoIndexButton = button(minimizedControls, "Auto index units", UDim2.fromOffset(0, 128), UDim2.new(1, 0, 0, 26))
+local autoIndexButton = button(minimizedControls, "Auto index units", UDim2.fromOffset(0, 128), UDim2.new(0.5, -3, 0, 26))
 autoIndexButton.Name, autoIndexButton.TextSize = "AutoIndexUnits", 12
 pages.autoIndexUnits = {name = "Auto index units", run = autoIndexButton,
     status = status.autoIndexUnits, runText = "Auto index units"}
@@ -9474,7 +9474,7 @@ end)()
 end
 
 
--- One-shot Trial -> Sell -> Events -> Mailbox -> Index; Sell reuses the existing full stage.
+-- Separate one-shot Auto claim and Auto trial actions; Sell reuses the existing full stage.
 do
 (function()
 local CONFIG = {
@@ -9494,36 +9494,41 @@ local CONFIG = {
 
 local activeContext, logStartedAt, trialCancelToken
 local stopReadyAt, autoRunning, startLockToken, startLockThread = 0, false, nil, nil
-local run = button(minimizedControls, "Auto tasks: Run once", UDim2.fromOffset(0, 36), UDim2.new(0.5, -3, 0, 26))
-run.Name, run.TextSize = "AutoTasksRun", 12
+local run = button(minimizedControls, "Auto claim", UDim2.fromOffset(0, 36), UDim2.new(0.5, -3, 0, 26))
+run.Name, run.TextSize = "AutoClaimRun", 12
+local trialRun = button(minimizedControls, "Auto trial", UDim2.new(0.5, 3, 0, 36), UDim2.new(0.5, -3, 0, 26))
+trialRun.Name, trialRun.TextSize = "AutoTrialRun", 12
 local nextButton = button(minimizedControls, "", UDim2.new(0.5, -29, 0, 36), UDim2.fromOffset(26, 26))
-nextButton.Name, nextButton.TextSize = "AutoTasksNext", 18
+nextButton.Name, nextButton.TextSize = "AutoClaimNext", 18
 nextButton.BackgroundColor3 = colors.surface
 minimizedActions.drawButtonIcon(nextButton, "next")
-local function refreshAutoTasksNext()
+local function refreshAutoClaimControls()
     if not alive then return end
     local ownRun = busy and activeRun == "autoSequence"
     local enabled = ownRun and activeContext ~= nil and not activeContext.cleaned
         and not activeContext.finished and not activeContext.skipRequested and os.clock() >= stopReadyAt
     nextButton.Visible = ownRun
     nextButton.Active, nextButton.AutoButtonColor = enabled, enabled
-    if ownRun then
+    local trialRunning = busy and activeRun == "autoTrial"
+    if ownRun or trialRunning then
         local canStop = os.clock() >= stopReadyAt
-        run.Active, run.AutoButtonColor = canStop, canStop
-        run.Text = canStop and "Stop auto tasks" or "Starting..."
+        local activeButton = trialRunning and trialRun or run
+        activeButton.Active, activeButton.AutoButtonColor = canStop, canStop
+        activeButton.Text = canStop and (trialRunning and "Stop auto trial" or "Stop auto claim") or "Starting..."
         stop.Active, stop.AutoButtonColor = canStop, canStop
         stop.BackgroundColor3 = canStop and Color3.fromRGB(165, 67, 79) or colors.idle
     end
     run.Size = UDim2.new(0.5, ownRun and -33 or -3, 0, 26)
     local altar = minimizedControls:FindFirstChild("TeleportAltar")
     if altar then
-        altar.Position = UDim2.new(0.5, 3, 0, 36)
+        altar.Position = UDim2.new(0.5, 3, 0, 128)
         altar.Size = UDim2.new(0.5, -3, 0, 26)
     end
 end
-refreshAutoTasksNext()
+refreshAutoClaimControls()
 local statusLabel = minimizedActions.newStatus("")
-pages.autoSequence = {name = "Auto tasks", run = run, status = statusLabel, runText = "Auto tasks: Run once"}
+pages.autoSequence = {name = "Auto claim", run = run, status = statusLabel, runText = "Auto claim"}
+pages.autoTrial = {name = "Auto trial", run = trialRun, status = minimizedActions.newStatus(""), runText = "Auto trial"}
 
 local function log(message, level, ctx)
     level = level or "INFO"
@@ -9578,7 +9583,8 @@ local function setStatus(message, quiet)
         if activeContext then logChanged(activeContext, "status", message, "STATE")
         else log(message, "STATE") end
     end
-    if alive and statusLabel then statusLabel.Text = message end
+    local currentStatus = activeRun == "autoTrial" and pages.autoTrial.status or statusLabel
+    if alive and currentStatus then currentStatus.Text = message end
     if alive and overviewStatus then overviewStatus.Text = message end
 end
 
@@ -10762,7 +10768,7 @@ local function cleanupSequence()
     local ctx = activeContext
     activeContext = nil
     local closed = closeContext(ctx)
-    if alive then refreshAutoTasksNext() end
+    if alive then refreshAutoClaimControls() end
     return closed
 end
 connect(nextButton.Activated, function()
@@ -10775,12 +10781,14 @@ connect(nextButton.Activated, function()
         ctx.skipClosed = cancelTrialRequest(ctx) and ctx.skipClosed
     end
     ctx.finished = true
-    refreshAutoTasksNext()
+    refreshAutoClaimControls()
     statusLabel.Text = ctx.stage.name .. " ended early. "
-        .. (ctx.lastStage and "Finishing Auto tasks..." or "Moving to the next stage...")
+        .. (ctx.lastStage and "Finishing Auto claim..." or "Moving to the next stage...")
 end)
-local sequence = {
+local trialSequence = {
     {name = "Trial", run = runTrial, frameName = "TrialFrame", frameKey = "frame"},
+}
+local sequence = {
     {name = "Sell", frameName = "SellFrame", frameKey = "sellFrame", run = function()
         local previousStage = activeStage
         activeStage = "sell"
@@ -10800,30 +10808,32 @@ modules.autoSequence = {
     cleanup = cleanupSequence,
     canStop = function() return not autoRunning or os.clock() >= stopReadyAt end,
     stop = function()
-        -- Explicit Stop always sends the end request, even before Trial set its request flag.
-        local cancelled = cancelTrialRequest(activeContext)
+        -- Auto trial Stop sends the end request even before its request flag is set.
+        local cancelled = true
+        if activeRun == "autoTrial" or (activeContext and activeContext.trialRequested) then
+            cancelled = cancelTrialRequest(activeContext)
+        end
         local closed = cleanupSequence()
         return cancelled and closed
     end,
-    run = function()
+    run = function(trialOnly)
         logStartedAt = os.clock()
         checkAlive()
-        setStatus("Cleaning workspace before auto tasks...")
-        modules.workspaceCleanup.runWithSequence(true)
-        for index, stage in ipairs(sequence) do
+        local stages = trialOnly and trialSequence or sequence
+        for index, stage in ipairs(stages) do
             checkAlive()
             local ctx = {stage = stage, green = false, nextMilestonesClick = 0,
-                milestonesAttempts = 0, greenExitArmed = false, lastStage = index == #sequence}
+                milestonesAttempts = 0, greenExitArmed = false, lastStage = index == #stages}
             activeContext = ctx
-            refreshAutoTasksNext()
-            setStatus(string.format("%d/%d: %s...", index, #sequence, stage.name))
+            refreshAutoClaimControls()
+            setStatus(string.format("%d/%d: %s...", index, #stages, stage.name))
             -- A separate stage worker lets Next interrupt every wait, including Sell.
             local owner = runScope.threads[coroutine.running()]
             ctx.stageWorker = task.defer(function()
                 runScope.threads[coroutine.running()] = owner
                 ctx.ok, ctx.result = pcall(stage.run, ctx)
                 ctx.finished = true
-                refreshAutoTasksNext()
+                refreshAutoClaimControls()
             end)
             while not ctx.finished do
                 checkAlive()
@@ -10835,15 +10845,17 @@ modules.autoSequence = {
             local closed = cleanupSequence()
             if ctx.skipRequested then
                 assert(ctx.skipClosed, stage.name .. " cleanup failed; sequence stopped.")
-                result = ctx.stage.name .. " ended early; continuing remaining auto tasks."
+                result = ctx.stage.name .. " ended early; continuing remaining auto claim stages."
             elseif not ok then error(result, 0) end
             assert(closed, stage.name .. " cleanup failed; sequence stopped.")
             log(tostring(result), "DONE", ctx)
         end
-        return "Finished: Trial > Sell > Events > Mailbox > Index."
+        return trialOnly and "Finished: Trial." or "Finished: Sell > Events > Mailbox > Index."
     end,
     setBusy = function(running)
-        local ownRun = running and activeRun == "autoSequence"
+        local claimRunning = running and activeRun == "autoSequence"
+        local trialRunning = running and activeRun == "autoTrial"
+        local ownRun = claimRunning or trialRunning
         if ownRun and not autoRunning then
             stopReadyAt = os.clock() + 1
             local token = {}
@@ -10853,7 +10865,7 @@ modules.autoSequence = {
                 runScope.background[coroutine.running()] = nil
                 if alive and startLockToken == token then
                     startLockThread = nil
-                    refreshAutoTasksNext()
+                    refreshAutoClaimControls()
                 end
             end)
             runScope.background[startLockThread] = true
@@ -10866,23 +10878,34 @@ modules.autoSequence = {
             end
         end
         autoRunning = ownRun
-        run.Active, run.AutoButtonColor = not running or ownRun, not running or ownRun
-        run.Text = ownRun and "Stop auto tasks" or pages.autoSequence.runText
-        run.BackgroundColor3 = ownRun and Color3.fromRGB(165, 67, 79)
+        run.Active, run.AutoButtonColor = not running or claimRunning, not running or claimRunning
+        run.Text = claimRunning and "Stop auto claim" or pages.autoSequence.runText
+        run.BackgroundColor3 = claimRunning and Color3.fromRGB(165, 67, 79)
             or (running and colors.idle or colors.accent)
-        refreshAutoTasksNext()
+        trialRun.Active, trialRun.AutoButtonColor = not running or trialRunning, not running or trialRunning
+        trialRun.Text = trialRunning and "Stop auto trial" or pages.autoTrial.runText
+        trialRun.BackgroundColor3 = trialRunning and Color3.fromRGB(165, 67, 79)
+            or (running and colors.idle or colors.accent)
+        refreshAutoClaimControls()
     end,
 }
-connect(run.Activated, function()
-    if not alive then return end
-    if busy and activeRun == "autoSequence" then stopRun(); return end
-    if busy then return end
-    if minimizedActions.openBusy then
-        statusLabel.Text = "Wait for the crate batch to finish."
-        return
-    end
-    startRun("autoSequence")
-end)
+modules.autoTrial = {
+    run = function() return modules.autoSequence.run(true) end,
+    stop = modules.autoSequence.stop,
+    canStop = modules.autoSequence.canStop,
+}
+for id, control in pairs({autoSequence = run, autoTrial = trialRun}) do
+    connect(control.Activated, function()
+        if not alive then return end
+        if busy and activeRun == id then stopRun(); return end
+        if busy then return end
+        if minimizedActions.openBusy then
+            pages[id].status.Text = "Wait for the crate batch to finish."
+            return
+        end
+        startRun(id)
+    end)
+end
 end)()
 end
 
@@ -11295,7 +11318,7 @@ local function runStage(id, cacheZoneOnly)
     scriptErrors.clearStage(id)
     page.status.Text = tostring(result or "Finished.")
     page.status.TextColor3 = colors.success
-    if id == "hotbarUpgrade" or id == "tutorial" or id == "autoSequence" or id == "autoIndexUnits" then logInfo(page.name, page.status.Text)
+    if id == "hotbarUpgrade" or id == "tutorial" or id == "autoSequence" or id == "autoTrial" or id == "autoIndexUnits" then logInfo(page.name, page.status.Text)
     else logStageResult(id, page.status.Text) end
     if activeRun == "master" then
         local enabled = preferences.stages[id]
@@ -11309,7 +11332,7 @@ end
 
 startRun = function(id)
     if not alive then return end
-    -- Master takes over immediately, including an in-progress Auto tasks stage.
+    -- Master takes over immediately, including an in-progress Auto claim or Auto trial stage.
     if id == "master" and busy and activeRun ~= "master" then stopRun(true) end
     if busy or (id ~= "master" and os.clock() - lastRun < CONFIG.General.ButtonDebounce) then
         if alive and (id == "upgradingUnit" or id == "upgradingOldUnit" or id == "master") then
@@ -11320,7 +11343,7 @@ startRun = function(id)
         return
     end
     if id == "tutorial" and (preferences.tutorialHidden or minimizedActions.openBusy) then return end
-    if id == "autoSequence" and minimizedActions.openBusy then return end
+    if (id == "autoSequence" or id == "autoTrial") and minimizedActions.openBusy then return end
     if id == "autoIndexUnits" and minimizedActions.openBusy then return end
 
     if (id == "pickaxe" or (id == "master" and preferences.stages.pickaxe)) and not modules.pickaxe.prepare() then
@@ -11345,7 +11368,7 @@ startRun = function(id)
     lastRun = os.clock()
     local page = runPage(id)
     page.status.TextColor3 = colors.muted
-    if id == "hotbarUpgrade" or id == "tutorial" or id == "autoSequence" or id == "autoIndexUnits" then minimizedActions.setRollEnabled(false) end
+    if id == "hotbarUpgrade" or id == "tutorial" or id == "autoSequence" or id == "autoTrial" or id == "autoIndexUnits" then minimizedActions.setRollEnabled(false) end
     if id == "master" then
         minimizedActions.setRollEnabled(false)
         preferences.masterEnabled = true
@@ -11491,16 +11514,16 @@ end
 stopRun = function(force)
     if not alive or not busy then return end
     if activeRun == "autoIndexUnits" and modules.autoIndexUnits.isFinishing() then return end
-    if activeRun == "autoSequence" and not force and modules.autoSequence and not modules.autoSequence.canStop() then return end
+    if (activeRun == "autoSequence" or activeRun == "autoTrial") and not force and modules.autoSequence and not modules.autoSequence.canStop() then return end
     scriptErrors.clearAll()
     local stoppedRun, stoppedStage = activeRun, activeStage
     if stoppedRun == "master" then
         preferences.masterEnabled = false
     end
     runScope.current = nil
-    if stoppedRun == "autoSequence" and modules.autoSequence then
-        local ok, message = pcall(modules.autoSequence.stop)
-        if not ok then logError("Auto tasks", message) end
+    if (stoppedRun == "autoSequence" or stoppedRun == "autoTrial") and modules[stoppedRun] then
+        local ok, message = pcall(modules[stoppedRun].stop)
+        if not ok then logError(runPage(stoppedRun).name, message) end
     end
     logInfo(stoppedStage and runPage(stoppedStage).name or "Master", "Stopped by user.")
     logging.flush()
@@ -11521,7 +11544,8 @@ stopRun = function(force)
             setMasterStageState(stoppedStage, "Stopped")
         end
     end
-    footer.Text = stoppedRun == "autoSequence" and "Auto tasks stopped." or "Stopped. Master OFF."
+    footer.Text = stoppedRun == "autoSequence" and "Auto claim stopped."
+        or stoppedRun == "autoTrial" and "Auto trial stopped." or "Stopped. Master OFF."
 end
 connect(stop.Activated, function() stopRun() end)
 
