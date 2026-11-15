@@ -456,7 +456,7 @@ local worker, activeStage, activeRun = nil, nil, nil
 local minimizedActions = {rollEnabled = false, rollWorker = nil, openBusy = false, openWorker = nil}
 local runScope = {buttonOwners = setmetatable({}, {__mode = "kv"}), masterAllowed = {}, current = nil, threads = setmetatable({}, {__mode = "k"}), background = {}, callbacks = {}}
 local connections, shownPrompts = {}, {}
-local heldPrompt, heldKey, mouseHeld = nil, nil, nil
+local heldPrompt, heldKey, mouseHeld, heldPromptButton = nil, nil, nil, nil
 local originalRoot, originalCFrame = nil, nil
 local dragging, touchPointer, dragStart, panelStart = false, nil, nil, nil
 local modules, pages, tabs, stageRows = {}, {}, {}, {}
@@ -984,9 +984,14 @@ end}
 end
 
 local function releaseInputs()
-    local prompt, key, mouse = heldPrompt, heldKey, mouseHeld
-    heldPrompt, heldKey, mouseHeld = nil, nil, nil
+    local prompt, key, mouse, promptButton = heldPrompt, heldKey, mouseHeld, heldPromptButton
+    heldPrompt, heldKey, mouseHeld, heldPromptButton = nil, nil, nil, nil
     if prompt then pcall(function() prompt:InputHoldEnd() end) end
+    if promptButton then pcall(function()
+        if promptButton.button.Parent then
+            firesignal(promptButton.button.MouseButton1Up, promptButton.point.X, promptButton.point.Y)
+        end
+    end) end
     if key then pcall(function() VIM:SendKeyEvent(false, key, false, game) end) end
     if mouse then pcall(function() VIM:SendMouseButtonEvent(mouse.X, mouse.Y, 0, false, game, 0) end) end
 end
@@ -10684,6 +10689,23 @@ end
 do
 local completedUnlockPlot
 
+-- Match the prompt's own billboard; never send mouse input to the screen.
+local function slotPromptButton(prompt)
+    local found
+    for _, gui in ipairs(playerGui:GetDescendants()) do
+        if gui:IsA("BillboardGui") and gui.Enabled and gui.Adornee == prompt.Parent then
+            for _, child in ipairs(gui:GetDescendants()) do
+                if child:IsA("GuiButton") and visible(child)
+                    and child.AbsoluteSize.X > 0 and child.AbsoluteSize.Y > 0 then
+                    if found then return nil end -- Ambiguous UI: keep the direct prompt hold.
+                    found = child
+                end
+            end
+        end
+    end
+    return found
+end
+
 local function slotPrompt(plot, name)
     local holders = plot:FindFirstChild("Holders")
     local holder = holders and holders:FindFirstChild(name)
@@ -10778,8 +10800,17 @@ run = function()
             if slotReady(prompt) then return true end
             assert(slotUnlockPrompt(prompt) and prompt.Enabled,
                 target .. ": waiting for its enabled unlock prompt.")
+            local promptButton = slotPromptButton(prompt)
             heldPrompt = prompt
             prompt:InputHoldBegin()
+            if promptButton then
+                assert(type(firesignal) == "function", "Volt firesignal is required for the prompt button hold.")
+                local point = promptButton.AbsolutePosition + promptButton.AbsoluteSize * 0.5 + GuiService:GetGuiInset()
+                heldPromptButton = {button = promptButton, point = point}
+                firesignal(promptButton.MouseButton1Down, point.X, point.Y)
+            else
+                reportRetry(name .. ": prompt UI button not identified; using InputHoldBegin only.")
+            end
             pause(2)
             releaseInputs()
             local deadline = os.clock() + CONFIG.General.SettleTime
