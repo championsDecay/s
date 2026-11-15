@@ -1047,6 +1047,7 @@ do
             watcher = game:GetService("RunService").PreSimulation:Connect(updateFlight)
         end,
         stop = stopFlight,
+        update = updateFlight,
     }
 end
 
@@ -1509,7 +1510,7 @@ local specs = {
     {"pickaxe", "Pickaxe", "Buy Best Pickaxe", "1. Check the current zone, then open, refresh, and close the shop.\n2. Find the highest unlocked pickaxe; at the max zone, also select the second highest.\n3. Check each saved count against the same limit and require its buy button to be green.\n4. Record and send one purchase request per eligible selection."},
     {"upgrades", "Upgrades", "Run Upgrades", "1. Read the current zone from your ZoneBoard.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-4 and 6-8 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
     {"upgradingOldUnit", "Upgrade Old Units", "Run Upgrade Old Units", "1. Check that current-zone Density is 0.\n2. Find displayed units matching the previous zone's required names.\n3. Upgrade Damage toward the target, starting with the lowest level.\n4. Stop when the target is reached or further upgrades are unavailable."},
-    {"unlockSlots", "Unlock slots", "Run Unlock slots", "Z4 only. Try each locked slot up to three times with a random one-stud offset and a five-second hold. Stop at the first slot still locked after three attempts; skip stages 6-8 that cycle. Once all slots unlock, skip this stage on later cycles."},
+    {"unlockSlots", "Unlock slots", "Run Unlock slots", "Z4 only. Unlock slots in order while cash is greater than the current slot cost. Retry without a fixed limit, holding for 5 seconds, then 10, 15, and so on after failures. Skip this stage when cash is insufficient. Once all slots unlock, skip this stage on later cycles."},
     {"units", "Required Units", "Run Required Units", "1. Check cooldown and clear the hotbar.\n2. Count whitelisted inventory copies plus displayed units.\n3. If eligible, remove displayed units.\n4. Fill empty unlocked pads using one stack at a time through hotbar 1."},
     {"mutation", "Mutate Units", "Run Mutate Units", "1. Check zone rules, Density, and Required Units preparation.\n2. Scan mutations in the first required unlocked holders.\n3. Roll eligible units below the active targets.\n4. Rescan until the targets are met or further rolls are unavailable."},
     {"upgradingUnit", "Upgrade Units", "Run Upgrade Units", "1. Check cooldown and scan the required lineup.\n2. Upgrade Damage to the allowed cap, with stat catch-up between batches.\n3. Finish Speed and MineSpeed catch-up on eligible units."},
@@ -1702,9 +1703,9 @@ do
         master = [[MASTER FLOW
 Run enabled stages in the configured order. Each stage button can also run its stage once. Master repeats until stopped; saved Master/stage toggles are restored on load.
 
-Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Waiting for ZoneBoardGui and standalone stages do not enable fly.
+Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Master hover also stays active while waiting for ZoneBoardGui; standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master fly after the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content.BackgroundColor3 is (38, 148, 84), and turn NightMode ON when its Content.BackgroundColor3 is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, read each setting Content.BackgroundColor3 and send a toggle request if it differs from the desired state. If confirmation fails, set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then re-read and resend only while the setting is still wrong. Repeat until all five settings are confirmed. Tutorial Stage 0 performs the same live check. Check the shared unit-sequence cooldown once at cycle start. A ready cycle gets permission for Required Units, Upgrade Units, and enabled automatic Workspace cleanup before starting the shared timer. That permission stays fixed for the cycle. Workspace cleanup also runs with Required Units OFF. Zone changes and Reset Cooldown affect the next cycle's check. Other-plot/weather cleanup starts after Sell. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master hover immediately when the Master run begins, including while waiting for the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content.BackgroundColor3 is (38, 148, 84), and turn NightMode ON when its Content.BackgroundColor3 is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, read each setting Content.BackgroundColor3 and send a toggle request if it differs from the desired state. If confirmation fails, set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then re-read and resend only while the setting is still wrong. Repeat until all five settings are confirmed. Tutorial Stage 0 performs the same live check. Check the shared unit-sequence cooldown once at cycle start. A ready cycle gets permission for Required Units, Upgrade Units, and enabled automatic Workspace cleanup before starting the shared timer. That permission stays fixed for the cycle. Workspace cleanup also runs with Required Units OFF. Zone changes and Reset Cooldown affect the next cycle's check. Other-plot/weather cleanup starts after Sell. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. The minimized notification box turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded.
 
@@ -1827,16 +1828,16 @@ Cache identities and initial Damage/Speed/Mining levels for this run. Refresh Sp
 STOPS
 Unavailable upgrade buttons stop progress rather than sending requests. Unfinished stat catch-up pauses further Damage. Identity, plot, character, display, focus-target, unreadable-level, or invalid-response failures stop the stage. Close the focused unit panel on exit.]],
         unlockSlots = [[ACTIONS
-1. Run only in Z4. Scan all numbered holder slots in numeric order before Required Units. Compare trimmed, lowercase ActionText only to the exact values "unlock" and "unlock at the hub"; ignore other text containing "unlock".
-2. If no matching unlock prompts are found, skip this stage and continue stages 6-8 normally. Otherwise move to the lowest matching locked slot, unequip tools, and activate its enabled prompt.
-3. Make up to three attempts per locked slot. Every attempt teleports using a different random one-stud horizontal offset and holds the unlock prompt for five seconds. During Master, fly stays enabled for the whole run. After every failed attempt, send a fresh Equip Best request.
-4. Confirm the slot now offers Place or Pick Up before attempting any higher matching locked slot, with its own three-attempt limit. A previously targeted lower slot not confirmed unlocked blocks higher slots; unrelated prompt text is ignored. Stop at the first matching slot still locked after three attempts. Reacquire prompts and recheck the exact ActionText before teleporting and holding.
+1. Run only in Z4. Scan numbered holder slots in numeric order before Required Units. Match trimmed, lowercase ActionText exactly to "unlock" or "unlock at the hub"; ignore unrelated prompt text.
+2. Read leaderstats.Cash.Value and the selected holder's Pad.HolderLabel.BG.CharName.Text before every attempt and again immediately before holding. Parse currency suffixes such as $1.6M and $43.2NovG. Cash must be strictly greater than the unlock cost; equal or lower cash skips only Unlock slots. Missing or unreadable amounts wait without attempting an unlock.
+3. Retry the first pending locked slot without a fixed attempt limit while cash is sufficient. Hold for 5 seconds on the first attempt, then 10, 15, 20, and so on after failed holds. Restart at 5 seconds for each new slot. Each attempt teleports two studs higher than the normal unit height when range permits, with a different random horizontal offset up to one stud, keeping both inside the prompt activation range; after every failed attempt, send a fresh Equip Best request. Master fly stays enabled during the run.
+4. Confirm the pending slot offers Place or Pick Up before moving to a higher slot. Temporary missing or changed prompts do not allow advancing past that slot. If no unlock prompts are found and no slot is pending, skip this stage and continue stages 6-8 normally.
 
 UNIT-STAGE RECOVERY
-A slot that stays locked after three attempts skips stages 6-8 for the current cycle; Cycle end still runs if enabled. If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units (stage 6) reports a required slot without its unlocked placement prompt in Z4, clear the completed-unlock state and return to this stage with the same three-attempt limit; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
+If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units reports a missing unlocked placement prompt in Z4, clear the completed-unlock state and return here using the same cash checks and increasing hold times; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
 
 STOPS
-Stop/unload cancels retries, releases held input, and disables Master fly. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
+Insufficient cash ends this stage; it does not disable later unit stages. Stop/unload cancels retries, releases held input, and disables Master fly. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
         cycleEnd = [[ACTIONS
 1. Check plot ownership. Request Equip Best, wait the configured delay, and refresh observed mutation progress when a zone is known. A repeated cycle-end request in the same cycle is skipped.
 2. Select the cached current zone if its toggle is ON.
@@ -5699,7 +5700,7 @@ local function runRequiredUnits()
     return string.format("Removed %d units. %s", removed, finalResult)
 end
 
-modules.units = {run = runRequiredUnits}
+modules.units = {run = runRequiredUnits, numberKey = inventoryDamageKey}
 end)()
 end
 
@@ -10687,6 +10688,7 @@ local function skipCycleUnitStages(reason)
 end
 
 do
+(function()
 local completedUnlockPlot
 
 -- Match the prompt's own billboard; never send mouse input to the screen.
@@ -10712,6 +10714,13 @@ local function slotPrompt(plot, name)
     local pad = holder and holder:FindFirstChild("Pad")
     return pad and pad:FindFirstChild("HolderPrompt"), holder
 end
+local function slotPromptPosition(prompt)
+    local parent = prompt.Parent
+    if parent and parent:IsA("Attachment") then return parent.WorldPosition end
+    if parent and parent:IsA("BasePart") then return parent.Position end
+    if parent and parent:IsA("Model") and parent.PrimaryPart then return parent.PrimaryPart.Position end
+    error("Unlock prompt has no usable world position.", 0)
+end
 local function slotReady(prompt)
     if not prompt or not prompt:IsA("ProximityPrompt") then return false end
     local action = prompt.ActionText:match("^%s*(.-)%s*$"):lower()
@@ -10722,6 +10731,52 @@ local function slotUnlockPrompt(prompt)
     local action = prompt.ActionText:match("^%s*(.-)%s*$"):lower()
     return action == "unlock" or action == "unlock at the hub"
 end
+-- Reuse the damage parser's decimal keys so even very large suffixes stay comparable.
+local function slotAmountKey(text)
+    local clean = tostring(text):gsub("<[^>]*>", ""):gsub("&nbsp;", " ")
+        :gsub("\194\160", " "):gsub(",", "")
+    local _, dollars = clean:gsub("%$", "")
+    if dollars > 1 then return nil end
+    local key = modules.units.numberKey((clean:gsub("^%s*%$%s*", "")))
+    if key then return key end
+    local amount, tail = clean:match("%$%s*([%d%.]+[eE][%+%-]?%d+)(.*)$")
+    if not amount then amount, tail = clean:match("%$%s*([%d%.]+%s*%a*)(.*)$") end
+    if not amount or tail:match("^[%w%.%+%-]") then return nil end
+    return modules.units.numberKey(amount)
+end
+
+local function slotFunds(plot, name)
+    local prompt, holder = slotPrompt(plot, name)
+    if slotReady(prompt) then return {unlocked = true} end
+    local stats = player:FindFirstChild("leaderstats")
+    local cash = stats and stats:FindFirstChild("Cash")
+    if not cash or not (cash:IsA("StringValue") or cash:IsA("NumberValue") or cash:IsA("IntValue")) then
+        return nil, "Waiting for leaderstats.Cash.Value before unlocking " .. name .. "."
+    end
+    local pad = holder and holder:FindFirstChild("Pad")
+    local label = pad and pad:FindFirstChild("HolderLabel")
+    local bg = label and label:FindFirstChild("BG")
+    local cost = bg and bg:FindFirstChild("CharName")
+    if not cost or not (cost:IsA("TextLabel") or cost:IsA("TextButton") or cost:IsA("TextBox")) then
+        return nil, "Waiting for " .. name .. ".Pad.HolderLabel.BG.CharName unlock cost."
+    end
+    local cashText, costText = tostring(cash.Value), cost.Text
+    local cashKey, costKey = slotAmountKey(cashText), slotAmountKey(costText)
+    if not cashKey or not costKey then
+        return nil, "Waiting for readable cash and " .. name .. " unlock cost: " .. cashText .. " / " .. costText
+    end
+    local enough
+    if cashKey.power ~= costKey.power then
+        enough = cashKey.power > costKey.power
+    else
+        local width = math.max(#cashKey.digits, #costKey.digits)
+        enough = cashKey.digits .. string.rep("0", width - #cashKey.digits)
+            > costKey.digits .. string.rep("0", width - #costKey.digits)
+    end
+    return {enough = enough, cashText = cashText, costText = costText,
+        reason = name .. ": cash " .. cashText .. " must be greater than unlock cost " .. costText .. "."}
+end
+
 modules.unlockSlots = {
 isComplete = function()
     return completedUnlockPlot ~= nil and completedUnlockPlot == getMyPlot()
@@ -10735,10 +10790,16 @@ run = function()
     local reportRetry = newRetryMonitor("Unlocking all Z4 holder slots")
     local attempts, lastAngles = {}, {}
     local pendingTarget, pendingNumber
-    local function stopAtSlot(name)
-        local reason = name .. ": still locked after three unlock attempts."
-        skipCycleUnitStages(reason)
-        return "Skipped: " .. reason .. " Stages 6-8 skipped this cycle."
+    local function waitForFunds(name)
+        while true do
+            checkAlive()
+            checkPlot(plot)
+            local funds, reason = slotFunds(plot, name)
+            if funds then return funds end
+            pages.unlockSlots.status.Text = reason
+            reportRetry(reason)
+            pause(CONFIG.General.RetryInterval)
+        end
     end
     while true do
         checkAlive()
@@ -10757,6 +10818,11 @@ run = function()
             if not slotReady(prompt) then allReady = false end
             if not target and slotUnlockPrompt(prompt) then target, targetNumber = slot.name, slot.number end
         end
+        -- Keep a previously targeted slot until its own prompt confirms unlocking.
+        if pendingTarget and not slotReady(slotPrompt(plot, pendingTarget))
+            and (not targetNumber or targetNumber > pendingNumber) then
+            target, targetNumber = pendingTarget, pendingNumber
+        end
         if not target then
             reportRetry(nil, true)
             if allReady then
@@ -10765,17 +10831,17 @@ run = function()
             end
             return "Skipped: no Unlock / Unlock at the hub prompts found. Stages 6-8 continue normally."
         end
-        if pendingNumber and pendingNumber < targetNumber and not slotReady(slotPrompt(plot, pendingTarget)) then
-            local reason = pendingTarget .. ": previously locked lower slot is not confirmed unlocked."
-            skipCycleUnitStages(reason)
-            return "Skipped: " .. reason .. " Higher slots and stages 6-8 skipped this cycle."
-        end
+
         pendingTarget, pendingNumber = target, targetNumber
         local name = target
-        if (attempts[name] or 0) >= 3 then return stopAtSlot(name) end
-        attempts[name] = (attempts[name] or 0) + 1
-        pages.unlockSlots.status.Text = "Unlocking " .. name .. "; attempt " .. attempts[name] .. "/3..."
-        local ok, unlocked = pcall(function()
+        local funds = waitForFunds(name)
+        if funds.unlocked then continue end
+        if not funds.enough then return "Skipped: " .. funds.reason end
+        local attempt = (attempts[name] or 0) + 1
+        local holdSeconds = attempt * 5
+        pages.unlockSlots.status.Text = string.format("Unlocking %s; attempt %d; holding %ds (cash %s; cost %s).",
+            name, attempt, holdSeconds, funds.cashText, funds.costText)
+        local ok, unlocked, insufficientFunds = pcall(function()
             local prompt, holder = slotPrompt(plot, target)
             if slotReady(prompt) then return true end
             assert(slotUnlockPrompt(prompt), target .. ": no matching unlock prompt.")
@@ -10790,9 +10856,17 @@ run = function()
             if angle == lastAngles[name] then angle = (angle + 1) % 360 end
             lastAngles[name] = angle
             local radians = math.rad(angle)
-            local offset = Vector3.new(math.cos(radians), 0, math.sin(radians))
-            root.CFrame = CFrame.new(upgrade.Position + Vector3.new(0, CONFIG.Units.TeleportHeight, 0) + offset, upgrade.Position)
+            local position = slotPromptPosition(prompt)
+            local maxDistance = prompt.MaxActivationDistance
+            assert(maxDistance > 0, target .. ": unlock prompt has no activation range.")
+            local safeRange = math.max(maxDistance * 0.8, maxDistance - 0.5)
+            local radius = math.min(1, safeRange * 0.25)
+            local height = math.min(CONFIG.Units.TeleportHeight + 2,
+                math.sqrt(math.max(0, safeRange * safeRange - radius * radius)))
+            local offset = Vector3.new(math.cos(radians) * radius, 0, math.sin(radians) * radius)
+            root.CFrame = CFrame.new(position + Vector3.new(0, height, 0) + offset, position)
             root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+            if activeRun == "master" then modules.masterFly.update() end
             pause(CONFIG.Units.TeleportDelay)
             checkPlot(plot)
             assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
@@ -10800,6 +10874,16 @@ run = function()
             if slotReady(prompt) then return true end
             assert(slotUnlockPrompt(prompt) and prompt.Enabled,
                 target .. ": waiting for its enabled unlock prompt.")
+            -- Cash can change during teleporting; read both values again just before holding.
+            local currentFunds = waitForFunds(name)
+            if currentFunds.unlocked then return true end
+            if not currentFunds.enough then return false, currentFunds end
+            prompt = slotPrompt(plot, target)
+            assert(slotUnlockPrompt(prompt) and prompt.Enabled,
+                target .. ": waiting for its enabled unlock prompt.")
+            assert((root.Position - slotPromptPosition(prompt)).Magnitude <= prompt.MaxActivationDistance,
+                target .. ": character moved outside the unlock prompt range.")
+            attempts[name] = attempt
             local promptButton = slotPromptButton(prompt)
             heldPrompt = prompt
             prompt:InputHoldBegin()
@@ -10811,7 +10895,7 @@ run = function()
             else
                 reportRetry(name .. ": prompt UI button not identified; using InputHoldBegin only.")
             end
-            pause(5)
+            pause(holdSeconds)
             releaseInputs()
             local deadline = os.clock() + CONFIG.General.SettleTime
             while true do
@@ -10824,6 +10908,7 @@ run = function()
         end)
         releaseInputs()
         checkAlive()
+        if ok and insufficientFunds then return "Skipped: " .. insufficientFunds.reason end
         if ok and unlocked then
             reportRetry(nil, true)
         else
@@ -10837,11 +10922,12 @@ run = function()
             end)
             checkAlive()
             if not equipped then reportRetry(message) end
-            -- Rescan before the attempt limit so no matching prompts allows normal continuation.
-            if attempts[name] < 3 then pause(CONFIG.General.RetryInterval) end
+            -- No attempt cap: recheck cash and the same pending slot before retrying.
+            pause(CONFIG.General.RetryInterval)
         end
     end
 end}
+end)()
 end
 
 modules.cycleEnd = {run = function()
@@ -10939,6 +11025,7 @@ startRun = function(id)
         if not actionIsCurrent(token) then return end
         local ok, result = pcall(function()
             if id == "master" then
+                modules.masterFly.start()
                 local cycle = 0
                 while actionIsCurrent(token) do
                     checkAlive()
@@ -10956,7 +11043,6 @@ startRun = function(id)
                         modules.workspaceCleanup.beginCycle(zoneId)
                         if cycle == 1 then
                             savePreferences()
-                            modules.masterFly.start()
                             modules.gameSettings.apply(nil, pages.master.status)
                         end
                         modules.dailyRewards.runCycle()
