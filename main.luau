@@ -5,7 +5,6 @@ local scriptLoadedAt = os.time()
 
 local CONFIG = {
     General = {
-        DeleteOtherPlots = true,
         WorkspaceCleanupEnabled = false,
         LoadTimeout = math.huge, -- Unlimited waits; retry reports are configured under Logging.
         RetryInterval = 1,
@@ -34,7 +33,7 @@ local CONFIG = {
                "Hawk Eye Blade",
                "Iron Fist Marine",
                "Sorcerer Killer",
-               "Quake Captain",
+               "King Of Namek",
                "Bounce Brawler",
                "Ten Tails Host",
                "Baryon Chakra",
@@ -643,7 +642,6 @@ local preferences = {
     stages = {},
 }
 assert(type(preferences.masterEnabled) == "boolean", "CONFIG.Flow.DefaultMasterEnabled must be boolean.")
-assert(type(CONFIG.General.DeleteOtherPlots) == "boolean", "CONFIG.General.DeleteOtherPlots must be boolean.")
 assert(type(CONFIG.General.WorkspaceCleanupEnabled) == "boolean", "CONFIG.General.WorkspaceCleanupEnabled must be boolean.")
 for _, id in ipairs(order) do
     local enabled = CONFIG.Flow.DefaultStages[id]
@@ -683,7 +681,6 @@ do
             selectCurrentZone = CONFIG.Upgrades.SelectCurrentZone,
             selectNextZone = CONFIG.Upgrades.SelectNextZone,
             unlimitedBestPickaxe = CONFIG.Pickaxe.UnlimitedBestPickaxe,
-            deleteOtherPlots = CONFIG.General.DeleteOtherPlots,
             workspaceCleanupEnabled = CONFIG.General.WorkspaceCleanupEnabled,
         }
         local encodedOK, encoded = pcall(HttpService.JSONEncode, HttpService, data)
@@ -773,11 +770,10 @@ do
         CONFIG.Upgrades.SelectCurrentZone = booleanOrDefault(data.selectCurrentZone, CONFIG.Upgrades.SelectCurrentZone)
         CONFIG.Upgrades.SelectNextZone = booleanOrDefault(data.selectNextZone, CONFIG.Upgrades.SelectNextZone)
         CONFIG.Pickaxe.UnlimitedBestPickaxe = booleanOrDefault(data.unlimitedBestPickaxe, CONFIG.Pickaxe.UnlimitedBestPickaxe)
-        CONFIG.General.DeleteOtherPlots = booleanOrDefault(data.deleteOtherPlots, CONFIG.General.DeleteOtherPlots)
         CONFIG.General.WorkspaceCleanupEnabled = booleanOrDefault(data.workspaceCleanupEnabled, CONFIG.General.WorkspaceCleanupEnabled)
 
         if data.selectCurrentZone == nil or data.selectNextZone == nil or data.unlimitedBestPickaxe == nil
-            or data.deleteOtherPlots == nil or data.workspaceCleanupEnabled == nil
+            or data.workspaceCleanupEnabled == nil
             or data.tutorialHidden == nil or data.discordNotifications == nil
             or data.dailySpinEnabled == nil or data.autoRedeemEnabled == nil or data.redeemedCodes == nil
             or data.autoAcceptTradeEnabled == nil or data.autoReadyTradeEnabled == nil or data.indexPlacedUnits == nil
@@ -1131,7 +1127,7 @@ local function cleanup(destroyGui)
     end
     -- A failing module must not prevent the remaining cleanup steps from running.
     for _, entry in ipairs({
-        {"plotCleanup", "stop"}, {"masterFly", "stop"}, {"chestRecovery", "cleanup"},
+        {"masterFly", "stop"}, {"chestRecovery", "cleanup"},
         {"gameSettings", "cleanup"}, {"hotbarUpgrade", "cleanup"}, {"autoSequence", "cleanup"},
         {"trade", "cleanup"},
         {"pickaxe", "cleanupWaiting"}, {"upgrades", "cleanup"},
@@ -1712,8 +1708,8 @@ do
     masterLayout.automation = make("Frame", masterLayout.body, {Name = "AutomationSettings", LayoutOrder = 4,
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1})
     masterLayout.stack(masterLayout.automation, 8)
-    masterLayout.settingSlots = {WorkspaceCleanupToggle = {1, 0}, DeleteOtherPlotsToggle = {1, 1},
-        AutoDailySpinToggle = {2, 0}, AutoRedeemToggle = {2, 1}}
+    masterLayout.settingSlots = {WorkspaceCleanupToggle = {1, 0},
+        AutoDailySpinToggle = {1, 1}, AutoRedeemToggle = {2, 0}}
     masterLayout.automationRows = {}
     for index = 1, 2 do
         masterLayout.automationRows[index] = make("Frame", masterLayout.automation, {Name = "SettingsRow" .. index,
@@ -1729,7 +1725,7 @@ Run enabled stages in the configured order. Each stage button can also run its s
 
 Before starting, save any pending Pickaxe limit edit when Pickaxe is enabled. Reject overlapping runs and rapid repeat clicks. Master turns off enchant rolling before starting the run. Fly keeps the character afloat throughout the active Master run, including between teleports, prompt holds, and cycle waits, and resumes after respawning. Master OFF, stopping the run, or unloading disables fly. Master hover also stays active while waiting for ZoneBoardGui; standalone stages do not enable fly.
 
-Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master hover immediately when the Master run begins, including while waiting for the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content.BackgroundColor3 is (38, 148, 84), and turn NightMode ON when its Content.BackgroundColor3 is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, read each setting Content.BackgroundColor3 and send a toggle request if it differs from the desired state. If confirmation fails, set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then re-read and resend only while the setting is still wrong. Repeat until all five settings are confirmed. Tutorial Stage 0 performs the same live check. Check the shared unit-sequence cooldown once at cycle start. A ready cycle gets permission for Required Units, Upgrade Units, and enabled automatic Workspace cleanup before starting the shared timer. That permission stays fixed for the cycle. Workspace cleanup also runs with Required Units OFF. Zone changes and Reset Cooldown affect the next cycle's check. Other-plot/weather cleanup starts after Sell. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
+Start each cycle with fresh cycle state. Wait for your owned plot's ZoneBoard.ZoneBoardGui.Root.List and readable zone locks, then confirm the current zone before settings, rewards, or stages. There is no separate game-load checker. Start Master hover immediately when the Master run begins, including while waiting for the first zone confirmation. At the start of the first Master cycle, check live game settings: turn Exotic/Mythical cutscenes and Mutations/Summons reveals OFF when their Content.BackgroundColor3 is (38, 148, 84), and turn NightMode ON when its Content.BackgroundColor3 is (80, 80, 80). Skip already-correct values and confirm each change; no settings completion file is used. During Master, read each setting Content.BackgroundColor3 and send a toggle request if it differs from the desired state. If confirmation fails, set PlayerGui.ScreenGui.CutGrassGame.SettingsFrame.Visible=true for 1 second, close it with Visible=false, then re-read and resend only while the setting is still wrong. Repeat until all five settings are confirmed. Tutorial Stage 0 performs the same live check. Check the shared unit-sequence cooldown once at cycle start. A ready cycle gets permission for Required Units, Upgrade Units, and enabled automatic Workspace cleanup before starting the shared timer. That permission stays fixed for the cycle. Workspace cleanup removes other MinePlots, weather, and extras together, and also runs with Required Units OFF. Zone changes and Reset Cooldown affect the next cycle's check. Skip disabled stages, except Upgrades still prepares cached zone/Density values. Restore temporary movement and release held inputs after each stage. Pause between stages.
 
 On a stage error, show its error, close Sell/skill-tree/inventory panels, and retry on the next cycle. Still attempt Cycle end if enabled. During the cycle delay, visit the pickaxe shop and click its first two purchase rows; see the Pickaxe guide. The minimized notification box turns red while a reported retry/stage error is active. Otherwise it turns green when the latest zone/Colossus scan confirms the highest configured zone with at least 1 valid Colossus Pip, and stays neutral in other cases. Red takes priority over green; recovery restores the applicable color. Expected mutation rolls are excluded.
 
@@ -1738,7 +1734,7 @@ Stop, Master OFF, unload, or the relevant shortcuts cancel active work, restore 
 MASTER CONTROLS
 Stage toggles select the repeated flow. Reset Cooldown is in Required Units. A confirmed zone change resets the unit-sequence cooldown. The zone card shows cached requirements and observed progress.
 
-Unlimited Best Pickaxe bypasses the saved limit for the highest unlocked pickaxe and, at the max zone, the second-highest unlocked pickaxe, while retaining separate per-ID request counts. Delete other plots / weather removes other plots and weather effects while enabled; rejoin to restore removed plots.
+Unlimited Best Pickaxe bypasses the saved limit for the highest unlocked pickaxe and, at the max zone, the second-highest unlocked pickaxe, while retaining separate per-ID request counts. Auto Workspace cleanup removes other MinePlots, weather effects, and unused Workspace extras together on the shared unit-sequence cooldown; rejoin to restore deleted content.
 
 Ctrl+1 toggles Master; Ctrl+2 toggles enchant rolling; Ctrl+3 opens Altar; Ctrl+4 Events Board; Ctrl+5 Mailbox; Ctrl+6 Trial. Other action shortcuts are disabled while Master is ON. All shortcuts are ignored while typing.
 
@@ -2037,7 +2033,7 @@ end
 
 do
     local toggle = masterLayout.setting(masterLayout.automation, "WorkspaceCleanupToggle", "Clean workspace extras",
-        "Works with Required Units OFF; shares its cooldown.")
+        "Includes other plots/weather; works with Required Units OFF; shares its cooldown.")
     local function refresh()
         local enabled = CONFIG.General.WorkspaceCleanupEnabled
         toggle.Text = enabled and "ON" or "OFF"
@@ -2089,25 +2085,6 @@ do
         end
     end
     masterLayout.text(card, "Works expanded or minimized. Other actions are disabled while Master is ON. Ignored while typing.", 11)
-end
-
-do
-    local toggle = masterLayout.setting(masterLayout.automation, "DeleteOtherPlotsToggle", "Clear other plots and weather",
-        "Keeps your plot; rejoin to restore removed effects.")
-    local function refresh()
-        local enabled = CONFIG.General.DeleteOtherPlots
-        toggle.Text = enabled and "ON" or "OFF"
-        toggle.BackgroundColor3 = enabled and colors.accent or colors.bg
-    end
-    connect(toggle.Activated, function()
-        if not alive then return end
-        CONFIG.General.DeleteOtherPlots = not CONFIG.General.DeleteOtherPlots
-        savePreferences()
-        refresh()
-        if CONFIG.General.DeleteOtherPlots then modules.plotCleanup.start()
-        else modules.plotCleanup.stop() end
-    end)
-    refresh()
 end
 
 do
@@ -2754,62 +2731,11 @@ getMyPlot = function()
     end, LOAD_TIMEOUT, "Your plot was not found (OwnerUserId must match your UserId).")
 end
 
-do
-    local cleanupWorker
-    local function scanOtherPlots()
-
-        local weather = workspace:FindFirstChild("WeatherFX_Local")
-        if weather then weather:ClearAllChildren() end
-
-        local mineWorld = workspace:FindFirstChild("MineWorld")
-        local plots = mineWorld and mineWorld:FindFirstChild("Plots")
-        if not plots then return end
-        local children = plots:GetChildren()
-        local myPlot
-        for _, plot in ipairs(children) do
-            if plot.Name:match("^MinePlot%d+$") and tonumber(plot:GetAttribute("OwnerUserId")) == player.UserId then
-                myPlot = plot
-                break
-            end
-        end
-
-        if not myPlot then return end
-        for _, plot in ipairs(children) do
-            if not alive or not CONFIG.General.DeleteOtherPlots then return end
-            if plot ~= myPlot and plot.Parent == plots and plot.Name:match("^MinePlot%d+$")
-                and tonumber(plot:GetAttribute("OwnerUserId")) ~= player.UserId then
-                plot:Destroy()
-            end
-        end
-    end
-    modules.plotCleanup = {
-        start = function()
-            if cleanupWorker or not alive or not CONFIG.General.DeleteOtherPlots then return end
-            cleanupWorker = task.defer(function()
-                local warned = false
-                while alive and CONFIG.General.DeleteOtherPlots do
-                    local ok, message = pcall(scanOtherPlots)
-                    if not ok and not warned then
-                        logWarning("[Plot Cleanup] " .. tostring(message))
-                    end
-                    warned = not ok
-                    task.wait(1)
-                end
-                cleanupWorker = nil
-            end)
-        end,
-        stop = function()
-            if cleanupWorker then pcall(task.cancel, cleanupWorker) end
-            cleanupWorker = nil
-        end,
-    }
-end
-
 -- Automatic Workspace cleanup shares the unit sequence's cooldown and resets.
 -- Each permitted cycle gets one attempt; there is no separate cleanup timer.
--- Other MinePlots/weather use the independent automatic plotCleanup worker above.
+-- Other MinePlots, weather, and Workspace extras are deleted together in this pass.
 do
-    local status = minimizedActions.newStatus("Keeps script paths and prompts. Rejoin to restore.")
+    local status = minimizedActions.newStatus("Removes other plots/weather; keeps your script paths and prompts. Rejoin to restore.")
 
 -- MAINTENANCE: Keep every Workspace path used anywhere in the script, including
 -- future stage paths. Add new paths here or to PLOT_KEEP before using them.
@@ -2893,20 +2819,28 @@ local function makeKeepTree(plots, plot)
 
     keep(plots, false)
     keep(plot, false)
-    -- Other plots belong to the separate DeleteOtherPlots toggle/worker.
-    for _, candidate in ipairs(plots:GetChildren()) do
-        if candidate ~= plot and candidate.Name:match("^MinePlot%d+$") then keep(candidate, true) end
-    end
     for _, names in ipairs(WORLD_KEEP) do keepPath(workspace, names) end
     for _, names in ipairs(PLOT_KEEP) do keepPath(plot, names) end
     keep(player.Character, true)
     keep(workspace.CurrentCamera, true)
     -- Keeping only the prompt is insufficient: deleting its part/model would
     -- destroy the prompt too. keep() also protects every ancestor up to Workspace.
-    -- Include disabled prompts and discover newly spawned prompts on every scan.
-    for _, descendant in ipairs(workspace:GetDescendants()) do
-        if descendant:IsA("ProximityPrompt") then keep(descendant, true) end
+    -- Include disabled/new prompts, but skip other MinePlots and weather entirely.
+    -- Fully kept subtrees already protect their prompts and need no further scan.
+    local function keepPrompts(parent, node)
+        for _, child in ipairs(parent:GetChildren()) do
+            local excluded = (parent == plots and child ~= plot and child.Name:match("^MinePlot%d+$"))
+                or (parent == workspace and child.Name == "WeatherFX_Local")
+            if not excluded then
+                local branch = node and node.children[child]
+                if not (branch and branch.all) then
+                    if child:IsA("ProximityPrompt") then keep(child, true)
+                    else keepPrompts(child, branch) end
+                end
+            end
+        end
     end
+    keepPrompts(workspace, tree)
     -- Terrain is an engine object; do not Clear() its voxels or destroy it.
     for _, child in ipairs(workspace:GetChildren()) do
         if child:IsA("Terrain") then keep(child, true) end
@@ -2954,7 +2888,7 @@ end
     local function refreshAutomaticStatus()
         pages.master.refreshWorkspaceCleanupToggle()
         status.Text = CONFIG.General.WorkspaceCleanupEnabled
-            and "Auto cleanup: shares the unit-sequence cooldown."
+            and "Auto cleanup: plots, weather, and extras; shares the unit-sequence cooldown."
             or "Auto cleanup: OFF."
         status.TextColor3 = colors.muted
     end
@@ -9320,6 +9254,8 @@ local function collectIndexUnits(ctx, preset)
             nextScan = now + 3
             local inventory = path(playerGui, {"MineGui", "InventoryFrame"})
             if inventory and inventory:IsA("GuiObject") and not indexTrading() then
+                local hotbarFrame = path(playerGui, {"MineGui", "HotbarFrame"})
+                if hotbarFrame and hotbarFrame:IsA("GuiObject") then hotbarFrame.Visible = true end
                 if not visible(inventory) then
                     inventory.Visible, ctx.opened.InventoryFrame = true, true
                     inventoryReady = false
@@ -9328,7 +9264,7 @@ local function collectIndexUnits(ctx, preset)
                     inventoryReady = true
                 else
                     local scroll = path(inventory, {"Content", "Scroll"})
-                    local hotbar = path(playerGui, {"MineGui", "HotbarFrame", "Content", "Container"})
+                    local hotbar = path(hotbarFrame, {"Content", "Container"})
                     if scroll and hotbar then
                         local names, missing = {}, {}
                         indexNames(scroll, false, names)
@@ -11460,9 +11396,6 @@ startRun = function(id)
                             elseif stage ~= "cycleEnd" and preferences.stages[stage] then
                                 if not (cycleSkipUnitsReason and (stage == "units" or stage == "mutation" or stage == "upgradingUnit")) then
                                     runStage(stage)
-                                    if stage == "sell" then
-                                        modules.plotCleanup.start()
-                                    end
                                 end
                             end
                         end
