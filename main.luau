@@ -1828,10 +1828,10 @@ Cache identities and initial Damage/Speed/Mining levels for this run. Refresh Sp
 STOPS
 Unavailable upgrade buttons stop progress rather than sending requests. Unfinished stat catch-up pauses further Damage. Identity, plot, character, display, focus-target, unreadable-level, or invalid-response failures stop the stage. Close the focused unit panel on exit.]],
         unlockSlots = [[ACTIONS
-1. Run only in Z4. Scan numbered holder slots in numeric order before Required Units. Match trimmed, lowercase ActionText exactly to "unlock" or "unlock at the hub"; ignore unrelated prompt text.
+1. Run only in Z4. Scan numbered holder slots in numeric order before Required Units. Require HolderPrompt.Enabled=true and match trimmed, lowercase ActionText exactly to "unlock" or "unlock at the hub"; skip disabled prompts and unrelated prompt text.
 2. Read leaderstats.Cash.Value and the selected holder's Pad.HolderLabel.BG.CharName.Text before every attempt and again immediately before holding. Parse currency suffixes such as $1.6M and $43.2NovG. Cash must be strictly greater than the unlock cost; equal or lower cash skips only Unlock slots. Missing or unreadable amounts wait without attempting an unlock.
 3. Retry the first pending locked slot without a fixed attempt limit while cash is sufficient. Hold for 5 seconds on the first attempt, then 10, 15, 20, and so on after failed holds. Restart at 5 seconds for each new slot. Each attempt teleports two studs higher than the normal unit height when range permits, with a different random horizontal offset up to one stud, keeping both inside the prompt activation range; after every failed attempt, send a fresh Equip Best request. Master fly stays enabled during the run.
-4. Confirm the pending slot offers Place or Pick Up before moving to a higher slot. Temporary missing or changed prompts do not allow advancing past that slot. If no unlock prompts are found and no slot is pending, skip this stage and continue stages 6-8 normally.
+4. Confirm an enabled pending slot offers Place or Pick Up before moving to a higher slot. A pending slot whose prompt becomes disabled is skipped. Temporary missing or changed prompts do not allow advancing past an enabled slot. If no enabled unlock prompts are found and no slot is pending, skip this stage and continue stages 6-8 normally.
 
 UNIT-STAGE RECOVERY
 If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units reports a missing unlocked placement prompt in Z4, clear the completed-unlock state and return here using the same cash checks and increasing hold times; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
@@ -10727,7 +10727,7 @@ local function slotReady(prompt)
     return action == "place" or action == "pick up"
 end
 local function slotUnlockPrompt(prompt)
-    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Enabled then return false end
     local action = prompt.ActionText:match("^%s*(.-)%s*$"):lower()
     return action == "unlock" or action == "unlock at the hub"
 end
@@ -10748,6 +10748,7 @@ end
 local function slotFunds(plot, name)
     local prompt, holder = slotPrompt(plot, name)
     if slotReady(prompt) then return {unlocked = true} end
+    if prompt and prompt:IsA("ProximityPrompt") and not prompt.Enabled then return {disabled = true} end
     local stats = player:FindFirstChild("leaderstats")
     local cash = stats and stats:FindFirstChild("Cash")
     if not cash or not (cash:IsA("StringValue") or cash:IsA("NumberValue") or cash:IsA("IntValue")) then
@@ -10818,7 +10819,11 @@ run = function()
             if not slotReady(prompt) then allReady = false end
             if not target and slotUnlockPrompt(prompt) then target, targetNumber = slot.name, slot.number end
         end
-        -- Keep a previously targeted slot until its own prompt confirms unlocking.
+        local pendingPrompt = pendingTarget and slotPrompt(plot, pendingTarget)
+        if pendingPrompt and pendingPrompt:IsA("ProximityPrompt") and not pendingPrompt.Enabled then
+            pendingTarget, pendingNumber = nil, nil
+        end
+        -- Keep an enabled pending slot until its own prompt confirms unlocking.
         if pendingTarget and not slotReady(slotPrompt(plot, pendingTarget))
             and (not targetNumber or targetNumber > pendingNumber) then
             target, targetNumber = pendingTarget, pendingNumber
@@ -10829,13 +10834,13 @@ run = function()
                 completedUnlockPlot = plot
                 return "Z4: all " .. #slots .. " holder slots are unlocked."
             end
-            return "Skipped: no Unlock / Unlock at the hub prompts found. Stages 6-8 continue normally."
+            return "Skipped: no enabled Unlock / Unlock at the hub prompts found. Stages 6-8 continue normally."
         end
 
         pendingTarget, pendingNumber = target, targetNumber
         local name = target
         local funds = waitForFunds(name)
-        if funds.unlocked then continue end
+        if funds.unlocked or funds.disabled then continue end
         if not funds.enough then return "Skipped: " .. funds.reason end
         local attempt = (attempts[name] or 0) + 1
         local holdSeconds = attempt * 5
@@ -10872,12 +10877,10 @@ run = function()
             assert(player.Character == character and root:IsDescendantOf(character), "Character changed during slot unlocking.")
             prompt = slotPrompt(plot, target)
             if slotReady(prompt) then return true end
-            assert(slotUnlockPrompt(prompt) and prompt.Enabled,
-                target .. ": waiting for its enabled unlock prompt.")
             -- Cash can change during teleporting; read both values again just before holding.
             local currentFunds = waitForFunds(name)
             if currentFunds.unlocked then return true end
-            if not currentFunds.enough then return false, currentFunds end
+            if currentFunds.disabled or not currentFunds.enough then return false, currentFunds end
             prompt = slotPrompt(plot, target)
             assert(slotUnlockPrompt(prompt) and prompt.Enabled,
                 target .. ": waiting for its enabled unlock prompt.")
@@ -10908,7 +10911,10 @@ run = function()
         end)
         releaseInputs()
         checkAlive()
-        if ok and insufficientFunds then return "Skipped: " .. insufficientFunds.reason end
+        if ok and insufficientFunds then
+            if insufficientFunds.disabled then continue end
+            return "Skipped: " .. insufficientFunds.reason
+        end
         if ok and unlocked then
             reportRetry(nil, true)
         else
