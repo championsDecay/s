@@ -456,7 +456,7 @@ local worker, activeStage, activeRun = nil, nil, nil
 local minimizedActions = {rollEnabled = false, rollWorker = nil, openBusy = false, openWorker = nil}
 local runScope = {buttonOwners = setmetatable({}, {__mode = "kv"}), masterAllowed = {}, current = nil, threads = setmetatable({}, {__mode = "k"}), background = {}, callbacks = {}}
 local connections, shownPrompts = {}, {}
-local heldPrompt, heldKey, mouseHeld, heldPromptButton = nil, nil, nil, nil
+local heldPrompt, heldKey, mouseHeld = nil, nil, nil
 local originalRoot, originalCFrame = nil, nil
 local dragging, touchPointer, dragStart, panelStart = false, nil, nil, nil
 local modules, pages, tabs, stageRows = {}, {}, {}, {}
@@ -984,8 +984,8 @@ end}
 end
 
 local function releaseInputs()
-    local prompt, key, mouse, promptButton = heldPrompt, heldKey, mouseHeld, heldPromptButton
-    heldPrompt, heldKey, mouseHeld, heldPromptButton = nil, nil, nil, nil
+    local prompt, key, mouse, promptButton = heldPrompt, heldKey, mouseHeld, runScope.heldPromptButton
+    heldPrompt, heldKey, mouseHeld, runScope.heldPromptButton = nil, nil, nil, nil
     if prompt then pcall(function() prompt:InputHoldEnd() end) end
     if promptButton then pcall(function()
         if promptButton.button.Parent then
@@ -10806,7 +10806,7 @@ run = function()
             if promptButton then
                 assert(type(firesignal) == "function", "Volt firesignal is required for the prompt button hold.")
                 local point = promptButton.AbsolutePosition + promptButton.AbsoluteSize * 0.5 + GuiService:GetGuiInset()
-                heldPromptButton = {button = promptButton, point = point}
+                runScope.heldPromptButton = {button = promptButton, point = point}
                 firesignal(promptButton.MouseButton1Down, point.X, point.Y)
             else
                 reportRetry(name .. ": prompt UI button not identified; using InputHoldBegin only.")
