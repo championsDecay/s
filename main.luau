@@ -1509,7 +1509,7 @@ local specs = {
     {"pickaxe", "Pickaxe", "Buy Best Pickaxe", "1. Check the current zone, then open, refresh, and close the shop.\n2. Find the highest unlocked pickaxe; at the max zone, also select the second highest.\n3. Check each saved count against the same limit and require its buy button to be green.\n4. Record and send one purchase request per eligible selection."},
     {"upgrades", "Upgrades", "Run Upgrades", "1. Read the current zone from your ZoneBoard.\n2. Recheck Colossus Pips as upgrades run.\n3. Prioritize eligible Density, then other available nodes.\n4. Turn stages 3-4 and 6-8 OFF as soon as Colossus Pips reach 1 or higher in the current zone; otherwise turn them ON.\nTurn Unlimited Best Pickaxe ON at the max zone and OFF in other zones. Check zone/Density fresh every cycle, including while OFF."},
     {"upgradingOldUnit", "Upgrade Old Units", "Run Upgrade Old Units", "1. Check that current-zone Density is 0.\n2. Find displayed units matching the previous zone's required names.\n3. Upgrade Damage toward the target, starting with the lowest level.\n4. Stop when the target is reached or further upgrades are unavailable."},
-    {"unlockSlots", "Unlock slots", "Run Unlock slots", "Z4 only. Try each locked slot up to five times with a random one-stud offset and a two-second hold. Stop at the first slot still locked after five attempts; skip stages 6-8 that cycle. Once all slots unlock, skip this stage on later cycles."},
+    {"unlockSlots", "Unlock slots", "Run Unlock slots", "Z4 only. Try each locked slot up to three times with a random one-stud offset and a five-second hold. Stop at the first slot still locked after three attempts; skip stages 6-8 that cycle. Once all slots unlock, skip this stage on later cycles."},
     {"units", "Required Units", "Run Required Units", "1. Check cooldown and clear the hotbar.\n2. Count whitelisted inventory copies plus displayed units.\n3. If eligible, remove displayed units.\n4. Fill empty unlocked pads using one stack at a time through hotbar 1."},
     {"mutation", "Mutate Units", "Run Mutate Units", "1. Check zone rules, Density, and Required Units preparation.\n2. Scan mutations in the first required unlocked holders.\n3. Roll eligible units below the active targets.\n4. Rescan until the targets are met or further rolls are unavailable."},
     {"upgradingUnit", "Upgrade Units", "Run Upgrade Units", "1. Check cooldown and scan the required lineup.\n2. Upgrade Damage to the allowed cap, with stat catch-up between batches.\n3. Finish Speed and MineSpeed catch-up on eligible units."},
@@ -1829,11 +1829,11 @@ Unavailable upgrade buttons stop progress rather than sending requests. Unfinish
         unlockSlots = [[ACTIONS
 1. Run only in Z4. Scan all numbered holder slots in numeric order before Required Units. Compare trimmed, lowercase ActionText only to the exact values "unlock" and "unlock at the hub"; ignore other text containing "unlock".
 2. If no matching unlock prompts are found, skip this stage and continue stages 6-8 normally. Otherwise move to the lowest matching locked slot, unequip tools, and activate its enabled prompt.
-3. Make up to five attempts per locked slot. Every attempt teleports using a different random one-stud horizontal offset and holds the unlock prompt for two seconds. During Master, fly stays enabled for the whole run. After every failed attempt, send a fresh Equip Best request.
-4. Confirm the slot now offers Place or Pick Up before attempting any higher matching locked slot, with its own five-attempt limit. A previously targeted lower slot not confirmed unlocked blocks higher slots; unrelated prompt text is ignored. Stop at the first matching slot still locked after five attempts. Reacquire prompts and recheck the exact ActionText before teleporting and holding.
+3. Make up to three attempts per locked slot. Every attempt teleports using a different random one-stud horizontal offset and holds the unlock prompt for five seconds. During Master, fly stays enabled for the whole run. After every failed attempt, send a fresh Equip Best request.
+4. Confirm the slot now offers Place or Pick Up before attempting any higher matching locked slot, with its own three-attempt limit. A previously targeted lower slot not confirmed unlocked blocks higher slots; unrelated prompt text is ignored. Stop at the first matching slot still locked after three attempts. Reacquire prompts and recheck the exact ActionText before teleporting and holding.
 
 UNIT-STAGE RECOVERY
-A slot that stays locked after five attempts skips stages 6-8 for the current cycle; Cycle end still runs if enabled. If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units (stage 6) reports a required slot without its unlocked placement prompt in Z4, clear the completed-unlock state and return to this stage with the same five-attempt limit; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
+A slot that stays locked after three attempts skips stages 6-8 for the current cycle; Cycle end still runs if enabled. If all slots unlock, stages 6-8 run normally and future cycles skip Unlock slots for that plot. If Required Units (stage 6) reports a required slot without its unlocked placement prompt in Z4, clear the completed-unlock state and return to this stage with the same three-attempt limit; stages 6-8 stay skipped for that failed cycle. Saved stage toggles stay unchanged.
 
 STOPS
 Stop/unload cancels retries, releases held input, and disables Master fly. Other zones skip this stage. Retry Equip Best requests do not suppress the normal Cycle end Equip Best request.]],
@@ -10736,7 +10736,7 @@ run = function()
     local attempts, lastAngles = {}, {}
     local pendingTarget, pendingNumber
     local function stopAtSlot(name)
-        local reason = name .. ": still locked after five unlock attempts."
+        local reason = name .. ": still locked after three unlock attempts."
         skipCycleUnitStages(reason)
         return "Skipped: " .. reason .. " Stages 6-8 skipped this cycle."
     end
@@ -10772,9 +10772,9 @@ run = function()
         end
         pendingTarget, pendingNumber = target, targetNumber
         local name = target
-        if (attempts[name] or 0) >= 5 then return stopAtSlot(name) end
+        if (attempts[name] or 0) >= 3 then return stopAtSlot(name) end
         attempts[name] = (attempts[name] or 0) + 1
-        pages.unlockSlots.status.Text = "Unlocking " .. name .. "; attempt " .. attempts[name] .. "/5..."
+        pages.unlockSlots.status.Text = "Unlocking " .. name .. "; attempt " .. attempts[name] .. "/3..."
         local ok, unlocked = pcall(function()
             local prompt, holder = slotPrompt(plot, target)
             if slotReady(prompt) then return true end
@@ -10811,7 +10811,7 @@ run = function()
             else
                 reportRetry(name .. ": prompt UI button not identified; using InputHoldBegin only.")
             end
-            pause(2)
+            pause(5)
             releaseInputs()
             local deadline = os.clock() + CONFIG.General.SettleTime
             while true do
@@ -10838,7 +10838,7 @@ run = function()
             checkAlive()
             if not equipped then reportRetry(message) end
             -- Rescan before the attempt limit so no matching prompts allows normal continuation.
-            if attempts[name] < 5 then pause(CONFIG.General.RetryInterval) end
+            if attempts[name] < 3 then pause(CONFIG.General.RetryInterval) end
         end
     end
 end}
