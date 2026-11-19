@@ -375,7 +375,7 @@ local CONFIG = {
         PlacementRetryDelay = 0.35,
         BestEquipDelay = 1.5,
         UISettleTime = 0.75,
-        InventorySettleTime = 0.2, -- Required Units inventory/hotbar confirmation only.
+        InventorySettleTime = 0.2, -- Required Units hotbar confirmation.
         DisplayRemoveDelay = 0.05,
         InventoryClickDelay = 0.05,
         HotbarClearDelay = 0.1,
@@ -397,6 +397,7 @@ local CONFIG = {
         AfterUpgradeClickDelay = 0.3,
         BeforeExitDelay = 0.2,
         RescanSettleTime = 0.2,
+        HolderScanPoll = 0.1,
         RollDelay = 0.1,
     },
     UI = {
@@ -561,23 +562,40 @@ local function logWarning(message)
     local clean = text:gsub("^%[[^%]]+%]%s*", "")
     consoleWarn(consolePrefix(scope) .. " Warning: " .. clean)
 end
-local scriptErrors = {retries = {}, stages = {}}
+local scriptErrors = {retries = {}, stages = {}, onChanged = function() end}
 function scriptErrors.clearStage(stage)
+    local changed = scriptErrors.stages[stage] ~= nil
     scriptErrors.stages[stage] = nil
     for monitor, source in pairs(scriptErrors.retries) do
-        if source.stage == stage then scriptErrors.retries[monitor] = nil end
+        if source.stage == stage then
+            scriptErrors.retries[monitor] = nil
+            changed = true
+        end
     end
+    if changed then scriptErrors.onChanged() end
+end
+function scriptErrors.clearRetries()
+    if next(scriptErrors.retries) == nil then return end
+    table.clear(scriptErrors.retries)
+    scriptErrors.onChanged()
 end
 function scriptErrors.clearAll()
     table.clear(scriptErrors.retries)
     table.clear(scriptErrors.stages)
+    scriptErrors.onChanged()
 end
 function scriptErrors.hasAny()
     return next(scriptErrors.retries) ~= nil or next(scriptErrors.stages) ~= nil
 end
 local function logError(scope, message)
     -- Retry monitors own their recovery state; actual stage errors remain until recovery/restart.
-    if scope ~= "Retry" then scriptErrors.stages[activeStage or activeRun or scope or "General"] = true end
+    if scope ~= "Retry" then
+        local stage = activeStage or activeRun or scope or "General"
+        if not scriptErrors.stages[stage] then
+            scriptErrors.stages[stage] = true
+            scriptErrors.onChanged()
+        end
+    end
     consoleWarn(consolePrefix(scope) .. " Error: " .. tostring(message))
 end
 local function logUnitUpgradeDetail(message)
@@ -592,7 +610,10 @@ local function newRetryMonitor(operation)
     local flagged, report = false, nil
     report = function(detail, recovered)
         if recovered then
-            scriptErrors.retries[report] = nil
+            if scriptErrors.retries[report] then
+                scriptErrors.retries[report] = nil
+                scriptErrors.onChanged()
+            end
             if flagged then
                 logInfo("Retry", string.format("%s recovered after %.1fs (%d failed checks).", operation, os.clock() - started, attempts))
             end
@@ -613,7 +634,15 @@ local function newRetryMonitor(operation)
             lastReport = now
             reportInterval = math.min(reportInterval * 2, CONFIG.Logging.RetryMaxReportSeconds)
         end
-        if flagged then scriptErrors.retries[report] = {stage = activeStage, run = activeRun} end
+        if flagged then
+            local source = scriptErrors.retries[report]
+            if source then
+                source.stage, source.run = activeStage, activeRun
+            else
+                scriptErrors.retries[report] = {stage = activeStage, run = activeRun}
+                scriptErrors.onChanged()
+            end
+        end
     end
     return report
 end
@@ -965,7 +994,7 @@ modules.gameSettings = {cleanup = closeSettingsFrame, apply = function(checkCurr
                                 toggled = toggled + 1
                             end
                         end
-                        pause(CONFIG.General.WaitPoll)
+                        pause(0.2)
                     end
                 else
                     waitUntil(function()
@@ -1439,12 +1468,8 @@ do
         TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, ZIndex = 5,
     })
     corner(notificationBox)
-    minimizedActions.setNotificationZone = function(zoneId, maxZoneColossus)
-        if minimizedActions.notificationZone ~= zoneId then minimizedActions.maxZoneColossus = false end
-        minimizedActions.notificationZone = zoneId
-        if maxZoneColossus ~= nil then minimizedActions.maxZoneColossus = maxZoneColossus end
-    end
-    minimizedActions.refreshNotification = function()
+    local function refreshNotification()
+        if not alive then return end
         local hasError = scriptErrors.hasAny()
         local complete = minimizedActions.maxZoneColossus == true
         local indicatorColor = hasError and Color3.fromRGB(165, 67, 79)
@@ -1454,8 +1479,15 @@ do
         if notificationBox.BackgroundColor3 ~= indicatorColor then notificationBox.BackgroundColor3 = indicatorColor end
         if notificationBox.Text ~= text then notificationBox.Text = text end
     end
-    minimizedActions.refreshNotification()
-    connect(game:GetService("RunService").Heartbeat, minimizedActions.refreshNotification)
+    scriptErrors.onChanged = refreshNotification
+    minimizedActions.setNotificationZone = function(zoneId, maxZoneColossus)
+        local wasComplete = minimizedActions.maxZoneColossus == true
+        if minimizedActions.notificationZone ~= zoneId then minimizedActions.maxZoneColossus = false end
+        minimizedActions.notificationZone = zoneId
+        if maxZoneColossus ~= nil then minimizedActions.maxZoneColossus = maxZoneColossus end
+        if wasComplete ~= (minimizedActions.maxZoneColossus == true) then refreshNotification() end
+    end
+    refreshNotification()
 end
 
 local stageGuide
@@ -1753,9 +1785,9 @@ Only act while this Sell run remains active. Click buttons only when visible and
         pickaxe = [[ACTIONS
 1. Save pending limit edits before starting; the limit must be a whole number of zero or more.
 2. Freshly check the current zone, then teleport to the pickaxe stand, wait for its enabled prompt, hold it long enough to open the shop, and wait for tiles to settle. Each unconfirmed opening retry returns beside the stand with a different random one-stud horizontal offset, then reactivates the prompt if the shop is still closed. Close the shop and restore position.
-3. Scan stable tile identities/colors. Tile IDs start at 2 in child order. Choose the highest unlocked ID and, only in the highest configured zone, the second-highest unlocked ID. Sold-out or unaffordable unlocked tiles still count toward rank; locked tiles do not.
+3. Scan stable tile identities and colors. Use LayoutOrder + 1 through layout 25 and LayoutOrder + 2 from layout 26 onward. Choose the highest unlocked ID and, only in the highest configured zone, the second-highest unlocked ID. Sold-out or unaffordable unlocked tiles still count toward rank; locked tiles do not.
 4. Load this account/game's saved per-ID request counts. Both selected IDs use the same saved limit and Unlimited Best Pickaxe setting, with separate request counts.
-5. Process each selected ID independently, best first. Require its tile to remain present and buyable (green). Reserve one count, save it, read it back to verify, recheck the tile, and send one purchase request per eligible ID.
+5. Process each selected ID independently, best first. Require its tile to remain present, buyable (green), and mapped to the same unique ID. Reserve one count, save it, read it back to verify, recheck the tile, and send one purchase request per eligible ID.
 
 CONDITIONS / STOPS
 Outside the max zone, only the highest unlocked ID is considered. At the max zone, independently consider the two highest unlocked IDs even if one is capped or unavailable; do not fall back to a third ID. No request is sent for a selected ID if its limit is reached or its tile is not buyable. Unlimited mode bypasses the limit only; requests are still counted.
@@ -1805,10 +1837,10 @@ Skip if no displayed unit matches. Stop a unit at the target or when Damage is u
 Require Density 1 or higher in Z1-Z11, or Density 0 or higher in Z12 and above. Use the shared cooldown permission granted at Master cycle start; manual runs check the cooldown directly. Without permission, keep displayed units and skip. Reset Cooldown clears it; a new zone resets it. Validate the equipment mode, use cached zone/Density, and check plot ownership. Manual runs start the sequence cooldown here; Master keeps the timer started at cycle entry.
 
 AVAILABILITY CHECK
-Clear occupied hotbar assignments, open InventoryFrame with Visible=true, and count current-zone whitelisted copies directly from inventory, including stack quantities. Close inventory with Visible=false. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is below the current zone minimum, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
+Clear occupied hotbar assignments and open InventoryFrame with Visible=true. Check visibility once per second, then wait one more second before counting current-zone whitelisted inventory copies, including stack quantities. Close inventory with Visible=false. Skip unreadable Damage values. Add matching displayed units to this inventory count; no inventory card is selected during the check. If insufficient, FinalEquipMode is Best, or Density is below the current zone minimum, keep displayed units and skip replacement/mutation preparation. Equip Best is handled at Cycle end.
 
 REPLACEMENT / PLACEMENT
-Once eligible, require a ready character, close panels, and remove all displayed units with confirmed pickup retries. Clear occupied hotbar assignments again, open inventory, and recheck available matching copies plus units already placed in required pads.
+Once eligible, require a ready character, close panels, and remove all displayed units with confirmed pickup retries. For each placement batch, clear occupied hotbar assignments again and use the same timed inventory check before counting units already displayed.
 
 Rank eligible inventory stacks by highest Damage, then preserve inventory order on equal Damage. Select only the highest ranked stack into hotbar 1. Confirm its stack quantity and that other hotbar slots are empty, keep inventory open, and place its copies in empty unlocked pads in holder-number order. Finish placing the selected stack before fetching another inventory card; confirm hotbar 1 is empty before loading another stack. Continue until every unlocked empty pad is filled, including pads beyond RequiredUnitCount, or no eligible inventory copies remain. RequiredUnitCount stays the minimum count gate. Keep inventory open between placement batches and close it when placement finishes or stops for insufficient copies.
 
@@ -2495,7 +2527,7 @@ local function closeUnitPanel(operation, checkCurrent)
                 nextAttempt = os.clock() + CONFIG.General.RetryInterval
             end
         end
-        pause(CONFIG.General.WaitPoll)
+        pause(0.2)
     end
 end
 
@@ -3440,7 +3472,7 @@ local function waitForSellButton(root, text, excluded)
             reportRetry("Buttons found: " .. (#available > 0 and table.concat(available, "; ") or "none"))
             nextDetails = now + CONFIG.General.RetryInterval
         end
-        pause(CONFIG.General.WaitPoll)
+        pause(0.2)
     end
     return nil
 end
@@ -3667,10 +3699,12 @@ local function reservePickaxe(id, unlimited)
 
     local data = readPickaxeCounts()
     maxPickaxes = data.maxPickaxes
-    if refreshCountsUI then refreshCountsUI(data) end
     local key = string.format("%.0f", id)
     local count = data.requestCounts[key] or 0
-    if not unlimited and count >= maxPickaxes then return nil, count, maxPickaxes end
+    if not unlimited and count >= maxPickaxes then
+        if refreshCountsUI then refreshCountsUI(data) end
+        return nil, count, maxPickaxes
+    end
     if not isValidQuantity(count + 1) then error("Pickaxe request count exceeds the saved-count range. No purchase sent.", 0) end
     data.requestCounts[key] = count + 1
     savePickaxeData(data)
@@ -3749,45 +3783,76 @@ countsList.CanvasSize = UDim2.fromOffset(0, 0)
 countsList.Parent = panel
 Instance.new("UICorner", countsList).CornerRadius = UDim.new(0, 6)
 
-local function addCountRow(text, index, capped)
-    local row = Instance.new("TextLabel")
-    row.Position = UDim2.fromOffset(8, 4 + (index - 1) * 24)
-    row.Size = UDim2.new(1, -24, 0, 24)
-    row.BackgroundTransparency = 1
-    row.Font = Enum.Font.Gotham
-    row.TextSize = 14
-    row.TextXAlignment = Enum.TextXAlignment.Left
-    row.TextColor3 = capped and Color3.fromRGB(255, 200, 125) or Color3.fromRGB(220, 225, 235)
-    row.Text = text
-    row.Parent = countsList
+local countRows = {}
+local latestCountsData
+local countListMessage = "Loading saved IDs..."
+local countColor = Color3.fromRGB(220, 225, 235)
+local cappedCountColor = Color3.fromRGB(255, 200, 125)
+
+local function setCountRow(index, text, capped)
+    local row = countRows[index]
+    if not row then
+        row = Instance.new("TextLabel")
+        row.Position = UDim2.fromOffset(8, 4 + (index - 1) * 24)
+        row.Size = UDim2.new(1, -24, 0, 24)
+        row.BackgroundTransparency = 1
+        row.Font = Enum.Font.Gotham
+        row.TextSize = 14
+        row.TextXAlignment = Enum.TextXAlignment.Left
+        countRows[index] = row
+        row.Parent = countsList
+    end
+    local textColor = capped and cappedCountColor or countColor
+    if row.TextColor3 ~= textColor then row.TextColor3 = textColor end
+    if row.Text ~= text then row.Text = text end
+end
+
+local function renderCountsWhenVisible()
+    if not alive or not panel.Visible or not content.Visible then return end
+    local data = latestCountsData
+    local ids = {}
+    if data then
+        for id, count in pairs(data.requestCounts) do
+            if count > 0 then table.insert(ids, id) end
+        end
+        table.sort(ids, function(a, b)
+            local first, second = tonumber(a), tonumber(b)
+            if first ~= second then return first < second end
+            return a < b
+        end)
+        for index, id in ipairs(ids) do
+            local count = data.requestCounts[id]
+            local unlimited = CONFIG.Pickaxe.UnlimitedBestPickaxe and unlimitedPickaxeIds[tonumber(id)] == true
+            local text = unlimited and string.format("ID: %s (%d; unlimited)", id, count)
+                or string.format("ID: %s (%d/%d)", id, count, data.maxPickaxes)
+            setCountRow(index, text, not unlimited and count >= data.maxPickaxes)
+        end
+    end
+    if #ids == 0 then
+        setCountRow(1, data and "No saved purchase requests yet." or countListMessage, false)
+    end
+    local rowCount = math.max(#ids, 1)
+    for index = #countRows, rowCount + 1, -1 do
+        countRows[index]:Destroy()
+        countRows[index] = nil
+    end
+    local size = UDim2.fromOffset(0, rowCount * 24 + 8)
+    if countsList.CanvasSize ~= size then countsList.CanvasSize = size end
 end
 
 refreshCountsUI = function(data)
-    if not alive then return end
-    for _, child in ipairs(countsList:GetChildren()) do
-        if child:IsA("TextLabel") then child:Destroy() end
-    end
-    local ids = {}
-    for id, count in pairs(data.requestCounts) do
-        if count > 0 then table.insert(ids, id) end
-    end
-    table.sort(ids, function(a, b)
-        local first, second = tonumber(a), tonumber(b)
-        if first ~= second then return first < second end
-        return a < b
-    end)
-    for index, id in ipairs(ids) do
-        local count = data.requestCounts[id]
-        local unlimited = CONFIG.Pickaxe.UnlimitedBestPickaxe and unlimitedPickaxeIds[tonumber(id)] == true
-        local text = unlimited and string.format("ID: %s (%d; unlimited)", id, count)
-            or string.format("ID: %s (%d/%d)", id, count, data.maxPickaxes)
-        addCountRow(text, index, not unlimited and count >= data.maxPickaxes)
-    end
-    if #ids == 0 then addCountRow("No saved purchase requests yet.", 1, false) end
-    countsList.CanvasSize = UDim2.fromOffset(0, math.max(#ids, 1) * 24 + 8)
+    latestCountsData = data
+    renderCountsWhenVisible()
 end
+connect(panel:GetPropertyChangedSignal("Visible"), renderCountsWhenVisible)
+connect(content:GetPropertyChangedSignal("Visible"), renderCountsWhenVisible)
 
-addCountRow("Loading saved IDs...", 1, false)
+local function pickaxeTileId(tile)
+    if tile.Name ~= "Tile" or not tile:IsA("GuiObject") then return nil end
+    local layoutOrder = tile.LayoutOrder
+    local id = layoutOrder + (layoutOrder >= 26 and 2 or 1)
+    if id > 0 then return id end
+end
 
 local function tileState(tile)
     local button = tile:FindFirstChild("BuyButton")
@@ -3814,6 +3879,14 @@ local function isAvailable(state)
     return state == "buyable" or state == "sold_out_or_insufficient_gold"
 end
 
+local function isBuyablePickaxe(list, tile, id)
+    if tile.Parent ~= list or pickaxeTileId(tile) ~= id or tileState(tile) ~= "buyable" then return false end
+    for _, other in ipairs(list:GetChildren()) do
+        if other ~= tile and pickaxeTileId(other) == id then return false end
+    end
+    return true
+end
+
 local function scanBestPickaxe(list)
     local reportRetry = newRetryMonitor("Scanning the best Pickaxe")
     local previousTiles = nil
@@ -3830,7 +3903,7 @@ local function scanBestPickaxe(list)
         local children = list:GetChildren()
         local tiles = {}
         local states = {}
-        local ids = {}
+        local ids, seenIds = {}, {}
         local ready = true
         local bestId = nil
         local bestTile = nil
@@ -3838,7 +3911,16 @@ local function scanBestPickaxe(list)
         for index = 1, #children do
             local tile = children[index]
             if tile.Name == "Tile" then
-                local id = tile.LayoutOrder + 1
+                local id = pickaxeTileId(tile)
+                if not id then
+                    ready, problem = false, "A pickaxe tile has an invalid layout order."
+                    continue
+                end
+                if seenIds[id] then
+                    ready, problem = false, string.format("Multiple pickaxe tiles map to ID %d.", id)
+                    continue
+                end
+                seenIds[id] = true
                 local state, reason = tileState(tile)
                 table.insert(tiles, tile)
                 table.insert(states, state or "unknown")
@@ -3857,7 +3939,7 @@ local function scanBestPickaxe(list)
             end
         end
 
-        if #tiles == 0 then
+        if ready and #tiles == 0 then
             ready = false
             problem = "No Tile children have loaded."
         end
@@ -3878,11 +3960,6 @@ local function scanBestPickaxe(list)
                 previousIds = ids
                 stableSince = os.clock()
             elseif os.clock() - stableSince >= SETTLE_TIME then
-
-                for index, tile in ipairs(tiles) do
-                    local color = tile.BuyButton.Content.BackgroundColor3
-
-                end
                 reportRetry(nil, true)
                 return bestId, bestTile, secondId, secondTile
             end
@@ -4132,7 +4209,10 @@ modules.pickaxe = {
         local id, tile, secondId, secondTile = scanBestPickaxe(list)
         unlimitedPickaxeIds = {}
         if not alive then return "Unloaded." end
-        if not id then return "Cannot buy the best pickaxe at the moment." end
+        if not id then
+            renderCountsWhenVisible()
+            return "Cannot buy the best pickaxe at the moment."
+        end
 
         local choices = {{id = id, tile = tile}}
         unlimitedPickaxeIds[id] = true
@@ -4152,12 +4232,13 @@ modules.pickaxe = {
             local data = readPickaxeCounts()
             maxPickaxes = data.maxPickaxes
             maxInput.Text = tostring(maxPickaxes)
-            refreshCountsUI(data)
             local savedCount = data.requestCounts[string.format("%.0f", selectedId)] or 0
             if not unlimited and savedCount >= maxPickaxes then
+                refreshCountsUI(data)
                 return string.format("%s: limit reached (%d/%d).", selectedLabel, savedCount, maxPickaxes)
             end
-            if selectedTile.Parent ~= list or tileState(selectedTile) ~= "buyable" then
+            if not isBuyablePickaxe(list, selectedTile, selectedId) then
+                refreshCountsUI(data)
                 return string.format("%s: unavailable; no request sent.", selectedLabel)
             end
 
@@ -4167,7 +4248,7 @@ modules.pickaxe = {
                 return string.format("%s: limit reached (%d/%d).", selectedLabel, limitCount, limit)
             end
             if not alive then return "Unloaded; saved slot retained." end
-            if selectedTile.Parent ~= list or tileState(selectedTile) ~= "buyable" then
+            if not isBuyablePickaxe(list, selectedTile, selectedId) then
                 return string.format("%s: unavailable; saved slot retained.", selectedLabel)
             end
             checkAlive()
@@ -4202,10 +4283,9 @@ maxInput.Text = tostring(maxPickaxes)
 if settingsOk then
     status.Text = "Enter or leave the max field to save. Drag title to move."
 else
-    for _, child in ipairs(countsList:GetChildren()) do
-        if child:IsA("TextLabel") then child:Destroy() end
-    end
-    addCountRow("Saved IDs could not be loaded.", 1, false)
+    latestCountsData = nil
+    countListMessage = "Saved IDs could not be loaded."
+    renderCountsWhenVisible()
     status.Text = "Error: " .. tostring(settingsError)
     status.TextColor3 = Color3.fromRGB(255, 166, 166)
     logWarning("[PickaxeBuyer] " .. tostring(settingsError))
@@ -4957,46 +5037,39 @@ local function rowButton(row)
     return found
 end
 
-local function inventoryTargets(scroll, includeAll, children)
-    local named
-    if not includeAll then
-        named = {}
-        for index = 0, 8 do
-            local row = scroll:FindFirstChild(tostring(index))
-            if not row or not row:IsA("GuiObject") or not rowButton(row) or not visible(row) then
-                named = nil
-                break
-            end
-            table.insert(named, row)
-        end
-    end
-    local rows = named or {}
-    if not named then
-        for _, row in ipairs(children or scroll:GetChildren()) do
-            if row:IsA("GuiObject") and visible(row) and rowButton(row) then
+local function collectInventoryTargets(scroll, cache)
+    local rows, rowsByKey = cache.rows, cache.rowsByKey
+    local keys, seen = cache.targetKeys, cache.seenKeys
+    table.clear(rows)
+    table.clear(rowsByKey)
+    table.clear(keys)
+    table.clear(seen)
+
+    for _, row in ipairs(scroll:GetChildren()) do
+        if row:IsA("GuiObject") then
+            -- The backing lookup includes hidden rows, as in the original scan.
+            rowsByKey[row.Name .. "\0" .. tostring(row.LayoutOrder)] = row
+            if visible(row) and rowButton(row) then
                 table.insert(rows, row)
             end
         end
-        local layout = scroll:FindFirstChildWhichIsA("UIGridStyleLayout")
-        local sortByName = layout and layout.SortOrder == Enum.SortOrder.Name
-        table.sort(rows, function(a, b)
-            if not sortByName and a.LayoutOrder ~= b.LayoutOrder then
-                return a.LayoutOrder < b.LayoutOrder
-            end
-            return a.Name < b.Name
-        end)
     end
-    if #rows == 0 or (not includeAll and #rows < 9) then return nil end
-    local targets = {}
-    local seen = {}
-    for index = 1, (includeAll and #rows or 9) do
-        local row = rows[index]
+    if #rows == 0 then return end
+
+    local layout = scroll:FindFirstChildWhichIsA("UIGridStyleLayout")
+    local sortByName = layout and layout.SortOrder == Enum.SortOrder.Name
+    table.sort(rows, function(a, b)
+        if not sortByName and a.LayoutOrder ~= b.LayoutOrder then
+            return a.LayoutOrder < b.LayoutOrder
+        end
+        return a.Name < b.Name
+    end)
+    for index, row in ipairs(rows) do
         local key = row.Name .. "\0" .. tostring(row.LayoutOrder)
         if seen[key] then error("Inventory rows need unique names or LayoutOrder values.", 0) end
         seen[key] = true
-        table.insert(targets, { name = row.Name, order = row.LayoutOrder })
+        keys[index] = key
     end
-    return targets
 end
 
 local damageIllions = { [""] = 0 }
@@ -5170,7 +5243,7 @@ local function readStableRequiredHotbar(operation, expected, retryAction, retryU
             nextRetry = os.clock() + math.max(CONFIG.General.RetryInterval, UI_SETTLE * 2)
         end
         reportRetry(problem)
-        pause(CONFIG.General.WaitPoll)
+        pause(0.2)
     end
 end
 
@@ -5208,16 +5281,22 @@ local function closeRequiredInventory()
         "Closing Required Units inventory", close)
 end
 
-local function openRequiredInventory()
-    if visible(inventoryFrame()) then return end
-    local function open()
-        local frame = inventoryFrame()
-        if not visible(frame) then frame.Visible = true end
+local function findInventoryFrame()
+    local mine = playerGui:FindFirstChild("MineGui")
+    return mine and mine:FindFirstChild("InventoryFrame")
+end
+
+local function openRequiredInventory(reportRetry)
+    while true do
+        local frame = findInventoryFrame()
+        if frame then frame.Visible = true end
+        pause(1)
+        if frame == findInventoryFrame() and visible(frame) then
+            pause(1)
+            if frame == findInventoryFrame() and visible(frame) then return frame end
+        end
+        reportRetry("Waiting for the inventory to stay visible before counting.")
     end
-    open()
-    waitUntil(function() return visible(inventoryFrame()) end, nil,
-        "Opening Required Units inventory", open)
-    pause(UI_SETTLE)
 end
 
 local function clearRequiredHotbar(event, plot, phase)
@@ -5247,55 +5326,29 @@ local function clearRequiredHotbar(event, plot, phase)
     end, clear, true)
 end
 
-local function cachedInventoryValue(label, cache, textKey, valueKey, parse)
-    -- Text properties are strings; false distinguishes a missing/unsupported label.
-    local text = false
-    if label and (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox")) then
-        text = label.Text
-    end
-    -- Cache nil parse results too; missing/malformed text must still fail normally.
-    if cache[textKey] == text then return cache[valueKey] end
-    local value = inventoryText(label)
-    if parse then value = parse(value) end
-    cache[textKey], cache[valueKey] = text, value
-    return value
-end
-
-local function scanRequiredInventory(densityLevel, zoneId, cache)
-    local rule = RequiredUnitsByZone[zoneId] or {Names = {}}
-    local allowed, rows = {}, {}
-    for _, name in ipairs(rule.Names) do allowed[name] = true end
-    local scroll = inventoryScroll()
-    local children = scroll:GetChildren()
-    for _, row in ipairs(children) do
-        if row:IsA("GuiObject") then rows[row.Name .. "\0" .. tostring(row.LayoutOrder)] = row end
-    end
-    -- Only retain rows from this pass, and only for the current stability read.
-    local previousRows = cache and cache.rows or {}
-    local parsedRows = {}
-    if cache then cache.rows = parsedRows end
-    local candidates, signature = {}, {}
+local function scanRequiredInventory(scroll, cache)
+    collectInventoryTargets(scroll, cache)
+    local candidates = cache.candidates
+    table.clear(candidates)
     local total, skippedNames, skippedDamage = 0, 0, 0
     -- An empty inventory is a valid zero count; it may still pass with displayed units.
-    local targets = inventoryTargets(scroll, true, children) or {}
-    for index, target in ipairs(targets) do
+    for index, key in ipairs(cache.targetKeys) do
         checkAlive()
-        local row = rows[target.name .. "\0" .. tostring(target.order)]
+        local row = cache.rowsByKey[key]
         if not row then return nil, "Inventory rows changed while counting; waiting for a fresh scan." end
-        local parsed = previousRows[row] or {}
-        parsedRows[row] = parsed
         local content = row:FindFirstChild("Content")
-        local itemName = content and content:FindFirstChild("ItemName")
-        local name = cachedInventoryValue(itemName, parsed, "nameText", "name")
-        if not allowed[name] then
+        local name = inventoryText(content and content:FindFirstChild("ItemName"))
+        if not cache.allowed[name] then
             skippedNames = skippedNames + 1
         else
-            local damage = cachedInventoryValue(content and content:FindFirstChild("Damage"), parsed, "damageText", "damage", inventoryDamageKey)
+            local damage = inventoryDamageKey(inventoryText(content and content:FindFirstChild("Damage")))
             if not damage then
                 skippedDamage = skippedDamage + 1
             else
-                local count = cachedInventoryValue(content and content:FindFirstChild("ActualItemCount"), parsed, "countText", "count", parseRequiredStackCount)
+                local count = parseRequiredStackCount(inventoryText(content and content:FindFirstChild("ActualItemCount")))
                 if not count then return nil, "Unreadable inventory stack count for " .. name .. "; waiting for its quantity." end
+                local targetRow = cache.rows[index]
+                local target = {name = targetRow.Name, order = targetRow.LayoutOrder}
                 table.insert(candidates, {target = target, row = row, name = name,
                     damage = damage, index = index, count = count, source = "inventory"})
                 total = total + count
@@ -5303,37 +5356,37 @@ local function scanRequiredInventory(densityLevel, zoneId, cache)
         end
     end
     table.sort(candidates, higherInventoryPriority)
-    for _, entry in ipairs(candidates) do
-        table.insert(signature, string.format("%q:%s:%q:%s:%s:%d", entry.target.name,
-            tostring(entry.target.order), entry.name, tostring(entry.damage.power), entry.damage.digits, entry.count))
-    end
     return {summary = candidates, total = total, skippedNames = skippedNames,
-        skippedDamage = skippedDamage}, table.concat(signature, "|")
+        skippedDamage = skippedDamage}
 end
 
 local function readRequiredInventory(densityLevel, zoneId, operation)
     local reportRetry = newRetryMonitor(operation)
-    local lastSignature, stableSince
-    local cache = {}
+    local cache = {allowed = {}, rows = {}, rowsByKey = {}, targetKeys = {}, seenKeys = {}, candidates = {}}
+    local rule = RequiredUnitsByZone[zoneId]
+    for _, name in ipairs(rule and rule.Names or {}) do cache.allowed[name] = true end
+
+    local frame = openRequiredInventory(reportRetry)
     while true do
         checkAlive()
-        if not visible(inventoryFrame()) then openRequiredInventory() end
-        local result, signature = scanRequiredInventory(densityLevel, zoneId, cache)
-        local problem = signature
-        if result then
-            if signature ~= lastSignature then lastSignature, stableSince = signature, os.clock() end
-            if os.clock() - stableSince >= UI_SETTLE then
+        local content = frame:FindFirstChild("Content")
+        local scroll = content and content:FindFirstChild("Scroll")
+        local problem = "Waiting for the inventory list to load."
+        if scroll then
+            local result, scanProblem = scanRequiredInventory(scroll, cache)
+            if result then
                 logUnitUpgradeDetail(string.format("%s density %d inventory count: %d whitelisted copies across %d stacks; skipped %d other names, %d unreadable Damage values.",
                     zoneId, densityLevel, result.total, #result.summary, result.skippedNames, result.skippedDamage))
                 reportRetry(nil, true)
                 return result
             end
-            problem = "Inventory names, ranking, and stack counts are still settling."
-        else
-            lastSignature, stableSince = nil, nil
+            problem = scanProblem
         end
         reportRetry(problem)
-        pause(CONFIG.General.WaitPoll)
+        pause(1)
+        if frame ~= findInventoryFrame() or not visible(frame) then
+            frame = openRequiredInventory(reportRetry)
+        end
     end
 end
 
@@ -5369,12 +5422,11 @@ local function selectRequiredStack(candidate)
     local ok, reason = pcall(activate)
     if not ok then logUnitUpgradeDetail("Hotbar 1 selection: " .. tostring(reason)) end
     pause(CLICK_DELAY)
-    readStableRequiredHotbar("Confirming " .. candidate.name .. " in hotbar 1", confirmed, function()
+    local summary = readStableRequiredHotbar("Confirming " .. candidate.name .. " in hotbar 1", confirmed, function()
         local current = readRequiredHotbarSnapshot()
         if current and confirmed(current) then return end
         activate()
     end, true)
-    local summary = readStableRequiredHotbar("Reading the confirmed hotbar 1 stack before placement", confirmed)
     saveAndPrintHotbarSummary(nil, summary)
     return summary[1]
 end
@@ -5458,10 +5510,12 @@ local function placeHotbarUnit(plot, holderName, entry, copy)
     end
 end
 
-local function requiredPlacementState(plot, zoneId)
+local function requiredPlacementState(plot, zoneId, countDisplayed)
     local required = requiredSlotCount(zoneId)
     local allowed, empty, displayed = {}, {}, {}
-    for _, name in ipairs(RequiredUnitsByZone[zoneId].Names) do allowed[name] = true end
+    if countDisplayed then
+        for _, name in ipairs(RequiredUnitsByZone[zoneId].Names) do allowed[name] = true end
+    end
     local holders, slots = listSlots(plot, true)
     -- Preserve required-pad checks while also including every extra unlocked empty pad.
     for number = 1, required do holderPrompt(plot, "M" .. number, true) end
@@ -5469,6 +5523,7 @@ local function requiredPlacementState(plot, zoneId)
         local holderName = slot.name
         local prompt = holderPrompt(plot, holderName, true)
         if hasPickUpAction(prompt) then
+            if not countDisplayed then continue end
             local name = waitUntil(function()
                 local current = readCharacterName(holders:FindFirstChild(holderName))
                 return current and (allowed[current] or slot.number > required) and current
@@ -5479,7 +5534,8 @@ local function requiredPlacementState(plot, zoneId)
         elseif prompt.ActionText == "Place" then
             table.insert(empty, holderName)
         elseif slot.number <= required then
-            return nil, nil, holderName .. ": waiting for its unlocked placement prompt."
+            -- Master can return to Unlock slots for Z4 recovery.
+            error(holderName .. ": waiting for its unlocked placement prompt.", 0)
         end
     end
     return empty, displayed
@@ -5518,52 +5574,52 @@ local function finishEquipping(event, plot, zoneId, densityLevel)
     while true do
         checkAlive()
         checkPlot(plot)
-        local empty, displayed, problem = requiredPlacementState(plot, zoneId)
-        if not empty then
-            -- Master skips stages 6-8 and returns to Unlock slots for Z4 recovery.
-            error(problem or "Required holder placement prompts are unavailable.", 0)
-        elseif #empty == 0 then
-            return finish(displayed, "all unlocked pads filled.")
-        else
+        -- Check for open pads without counting displayed units before the inventory read.
+        local openPads = requiredPlacementState(plot, zoneId, false)
+        local inventory
+        if #openPads > 0 then
             clearRequiredHotbar(event, plot, "Preparing hotbar 1 batch " .. (batches + 1))
-            openRequiredInventory()
-            local inventory = readRequiredInventory(densityLevel, zoneId, "Counting inventory before the next hotbar 1 batch")
-            local combined = {}
-            for _, entry in ipairs(inventory.summary) do table.insert(combined, entry) end
-            for _, entry in ipairs(displayed) do table.insert(combined, entry) end
-            unitCountSnapshot = {zone = zoneId, summary = combined}
-            local available = inventory.total + #displayed
-            recordMasterUnitCount(zoneId, available)
-            _G.MineHotbarMatchSummary = {zone = zoneId, matchedCount = available,
-                inventoryMatchedCount = inventory.total, displayedMatchedCount = #displayed, RequiredUnitCount = required}
-            if available < required then
-                closeRequiredInventory()
-                return skipPlacement(string.format("%s: inventory=%d, displayed=%d; matched %d, required %d.",
-                    zoneId, inventory.total, #displayed, available, required))
-            end
-            if inventory.total == 0 then
-                return finish(displayed, string.format("%d empty unlocked pads remain; no eligible inventory copies left.", #empty))
-            end
-            local entry = selectRequiredStack(inventory.summary[1])
-            batches = batches + 1
-            -- Consume this selected stack on empty pads before fetching another inventory card.
-            local copies = math.min(entry.count, #empty)
-            for copy = 1, copies do
-                placeHotbarUnit(plot, empty[copy], entry, copy)
-                placed = placed + 1
-            end
-            if copies == entry.count and copies < #empty then
-                readStableRequiredHotbar("Confirming hotbar 1 is empty before selecting the next whitelisted stack", function(summary)
-                    return summary[1].name == ""
-                end, function()
-                    -- Alternate confirmation checks with removal retries until slot 1 is empty.
-                    checkPlot(plot)
-                    event:FireServer("MineAssignHotbar", "1", "")
-                end, true)
-            end
-            logUnitUpgradeDetail(string.format("%s hotbar 1 batch %d: %s; placed %d copies; %d empty unlocked pads remain.",
-                zoneId, batches, entry.name, copies, #empty - copies))
+            inventory = readRequiredInventory(densityLevel, zoneId, "Counting inventory before the next hotbar 1 batch")
         end
+        local empty, displayed = requiredPlacementState(plot, zoneId, true)
+        if #empty == 0 then return finish(displayed, "all unlocked pads filled.") end
+        if not inventory then continue end -- A pad opened after the first check.
+
+        local combined = {}
+        for _, entry in ipairs(inventory.summary) do table.insert(combined, entry) end
+        for _, entry in ipairs(displayed) do table.insert(combined, entry) end
+        unitCountSnapshot = {zone = zoneId, summary = combined}
+        local available = inventory.total + #displayed
+        recordMasterUnitCount(zoneId, available)
+        _G.MineHotbarMatchSummary = {zone = zoneId, matchedCount = available,
+            inventoryMatchedCount = inventory.total, displayedMatchedCount = #displayed, RequiredUnitCount = required}
+        if available < required then
+            closeRequiredInventory()
+            return skipPlacement(string.format("%s: inventory=%d, displayed=%d; matched %d, required %d.",
+                zoneId, inventory.total, #displayed, available, required))
+        end
+        if inventory.total == 0 then
+            return finish(displayed, string.format("%d empty unlocked pads remain; no eligible inventory copies left.", #empty))
+        end
+        local entry = selectRequiredStack(inventory.summary[1])
+        batches = batches + 1
+        -- Consume this selected stack on empty pads before fetching another inventory card.
+        local copies = math.min(entry.count, #empty)
+        for copy = 1, copies do
+            placeHotbarUnit(plot, empty[copy], entry, copy)
+            placed = placed + 1
+        end
+        if copies == entry.count and copies < #empty then
+            readStableRequiredHotbar("Confirming hotbar 1 is empty before selecting the next whitelisted stack", function(summary)
+                return summary[1].name == ""
+            end, function()
+                -- Alternate confirmation checks with removal retries until slot 1 is empty.
+                checkPlot(plot)
+                event:FireServer("MineAssignHotbar", "1", "")
+            end, true)
+        end
+        logUnitUpgradeDetail(string.format("%s hotbar 1 batch %d: %s; placed %d copies; %d empty unlocked pads remain.",
+            zoneId, batches, entry.name, copies, #empty - copies))
     end
 end
 
@@ -5628,7 +5684,6 @@ local function runRequiredUnits()
 
     beginUnitSequence(zoneId)
     clearRequiredHotbar(event, plot, "Availability check")
-    openRequiredInventory()
     local inventory = readRequiredInventory(densityLevel, zoneId, "Counting whitelisted inventory copies for RequiredUnitCount")
     closeRequiredInventory()
     local available, availabilityReason = combinedRequiredAvailability(plot, zoneId, inventory.summary)
@@ -5769,7 +5824,7 @@ local function scanStable(plot, RequiredUnitCount)
             problem = "Holder data is still changing."
         end
         reportRetry(problem)
-        pause(CONFIG.General.WaitPoll)
+        pause(CONFIG.Mutation.HolderScanPoll)
     end
 end
 local function scanRequiredMutations(plot, RequiredUnitCount)
@@ -8998,21 +9053,26 @@ end
 local function resetIndexTrade()
     autoIndexTradeFrame, autoIndexHasOffers, autoIndexTradeReady = nil, false, false
 end
-local watchedIndexFrame, indexFrameConnections = nil, {}
+local watchedIndexFrame, indexFrameConnection
 watchIndexFrame = function(tradeFrame)
+    if tradeFrame and not tradeFrame:IsA("GuiObject") then tradeFrame = nil end
     if watchedIndexFrame == tradeFrame then return end
-    for _, connection in ipairs(indexFrameConnections) do connection:Disconnect() end
-    table.clear(indexFrameConnections)
+    if indexFrameConnection then
+        indexFrameConnection:Disconnect()
+        local index = table.find(connections, indexFrameConnection)
+        if index then table.remove(connections, index) end
+        indexFrameConnection = nil
+    end
     watchedIndexFrame = tradeFrame
     resetIndexTrade()
     if not tradeFrame then return end
-    table.insert(indexFrameConnections, connect(tradeFrame:GetPropertyChangedSignal("Visible"), function()
-        if not tradeFrame.Visible then
+    indexFrameConnection = connect(tradeFrame:GetPropertyChangedSignal("Visible"), function()
+        if watchedIndexFrame == tradeFrame and not tradeFrame.Visible then
             resetIndexTrade()
             local ctx = contexts.preset
             if ctx and ctx.automaticIndex and ctx.presetTradeFrame == tradeFrame then ctx.cancelled = true end
         end
-    end))
+    end)
 end
 local function startTrade(kind, callback, presetKey)
     if not alive or (busy and activeRun == "master") or contexts[kind] then return end
@@ -9055,7 +9115,11 @@ local function startTrade(kind, callback, presetKey)
     runScope.background[thread] = true
     return ctx
 end
+local function indexCheckNeeded()
+    return indexSequence ~= nil or (indexQueueCached and not indexSequencePaused)
+end
 resumeIndexPreset = function()
+    if not indexCheckNeeded() then return false end
     local tradeFrame = path(playerGui, {"MineGui", "TradeFrame"})
     -- Receiving index units must never activate the outgoing cached preset.
     -- Only the frame opened by our saved recipient's request may resume it.
@@ -9064,7 +9128,7 @@ resumeIndexPreset = function()
         if indexSequence.phase ~= "trading" or indexSequence.tradeFrame ~= tradeFrame then return true end
         -- An unseeded/failed first batch must not Ready an empty outgoing trade.
         if not indexSequence.cycleComplete and not indexQueueCached then return true end
-    elseif indexSequencePaused then return false end
+    end
     watchIndexFrame(tradeFrame)
     if not tradeFrame or not tradeFrame:IsA("GuiObject") or not visible(tradeFrame) then
         resetIndexTrade()
@@ -9096,12 +9160,19 @@ resumeIndexPreset = function()
     end
     return true -- Block Ready until this trade's index placement finishes.
 end
-local nextIndexCheck = 0
-connect(game:GetService("RunService").Heartbeat, function()
-    if os.clock() < nextIndexCheck then return end
-    nextIndexCheck = os.clock() + CONFIG.TradePoll
-    resumeIndexPreset()
+local indexTradeTimer = task.defer(function()
+    while alive do
+        if indexCheckNeeded() then
+            local ok, message = pcall(resumeIndexPreset)
+            if not ok then consoleWarn("[Trade Preset] Index queue check failed: " .. tostring(message)) end
+        elseif watchedIndexFrame and not contexts.preset then
+            watchIndexFrame(nil)
+        end
+        task.wait(CONFIG.TradePoll)
+    end
+    runScope.background[coroutine.running()] = nil
 end)
+runScope.background[indexTradeTimer] = true
 for kind, control in pairs(tradeControls) do
     connect(control.button.Activated, function()
         if not alive or indexSequence or contexts.preset or (busy and activeRun == "master") then return end
@@ -9464,7 +9535,7 @@ modules.trade = {
             local ok, err = pcall(releasePresetInput, ctx)
             if not ok then complete = false; log(tostring(err), "ERROR", ctx) end
         end
-        if alive then refreshControls() end
+        if alive then refreshControls() else watchIndexFrame(nil) end
         return complete
     end,
 }
@@ -10992,7 +11063,7 @@ local function setControls(running)
 end
 
 local function resetRun()
-    table.clear(scriptErrors.retries)
+    scriptErrors.clearRetries()
     if modules.gameSettings and modules.gameSettings.cleanup then pcall(modules.gameSettings.cleanup) end
     if modules.chestRecovery then pcall(modules.chestRecovery.cleanup) end
     runScope.current = nil
